@@ -2,21 +2,22 @@
   "name": "@repo/db",
   "version": "1.0.0",
   "main": "index.js",
-  "exports":{
- "./client":"./src/index.ts"
+  "exports": {
+    "./client": "./src/index.ts"
   },
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "devDependencies": {
-    "@repo/typescript-config": "workspace:*"
+    "@repo/typescript-config": "workspace:*",
+    "@types/node": "^22.15.3",
+    "prisma": "^6.19.2"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
   "description": "",
   "dependencies": {
-    "@prisma/client": "^7.3.0",
-    "prisma": "^7.3.0"
+    "@prisma/client": "6.19.2"
   }
 }

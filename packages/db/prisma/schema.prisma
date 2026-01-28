@@ -4,6 +4,7 @@ generator client {
 
 datasource db {
   provider = "postgresql"
+  url      = env("DATABASE_URL")
 }
 
 model User {
@@ -12,17 +13,17 @@ model User {
   password String
   name     String
   photo    String?
-  room     Room[]
+  rooms    Room[]
   chats    Chat[]
 }
 
 model Room {
-  id       Int      @id @default(autoincrement())
-  slug     String   @unique
-  createAt DateTime @default(now())
-  adminId  String
-  admin    User     @relation(fields: [adminId], references: [id])
-  chats    Chat[]
+  id        Int      @id @default(autoincrement())
+  slug      String   @unique
+  createdAt DateTime @default(now())
+  adminId   String
+  admin     User     @relation(fields: [adminId], references: [id])
+  chats     Chat[]
 }
 
 model Chat {

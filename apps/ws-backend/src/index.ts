@@ -1,7 +1,7 @@
+import "dotenv/config";
 import {WebSocketServer} from "ws"
 import Jwt, { JwtPayload }  from "jsonwebtoken";
 import { JWT_SECRET } from "@repo/backend-common/config";
-
 const wss =new WebSocketServer({port:8080})
 
 wss.on('connection',function connection(ws,request){
@@ -27,6 +27,6 @@ wss.on('connection',function connection(ws,request){
     }
 
     ws.on('message',function message(data){
-        ws.send('pong')
+        ws.send('pong') 
     })
 })
