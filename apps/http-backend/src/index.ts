@@ -4,11 +4,11 @@ import { JWT_SECRET } from '@repo/backend-common/config';
 import { middleware } from "./middleware";
 import { CreateUserSchema, SigninSchema, CreateRoomSchema } from "@repo/common/types";
 import { prismaClient } from "@repo/db/client";
-// import cors from "cors";
+import cors from "cors";
 
 const app = express();
 app.use(express.json());
-// app.use(cors())
+app.use(cors())
 
 app.post("/signup", async (req, res) => {
 
@@ -91,14 +91,15 @@ app.post("/room", middleware, async (req, res) => {
             }
         })
 
-        res.json({
+       res.json({
             roomId: room.id
         })
-    } catch(e) {
-        res.status(411).json({
-            message: "Room already exists with this name"
-        })
-    }
+    } catch (e) {
+  console.error(e);
+  res.status(500).json({
+    message: "Something went wrong"
+  });
+}
 })
 
 app.get("/chats/:roomId", async (req, res) => {
