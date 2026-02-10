@@ -69,24 +69,36 @@ function AuthPage() {
     }
     setLoading(true);
     try {
-      const endpoint = activeTab === 'signup' ? `${BACKEND_URL}/signup` : `${BACKEND_URL}/login`;
-      let payload = activeTab === 'signup' 
-        ? { name: formData.username, email: formData.email, password: formData.password }
-        : { email: formData.email, password: formData.password };
+      const endpoint = activeTab === 'signup' ? `${BACKEND_URL}/signup` : `${BACKEND_URL}/signin`;
+      
+      // 🛠️ FIX: Map 'email' to 'username' because backend expects 'username'
+      const payload = activeTab === 'signup' 
+        ? { 
+            username: formData.email, // Backend uses 'username' field for email
+            password: formData.password,
+            name: formData.username   // We send the username input as 'name'
+          }
+        : { 
+            username: formData.email, // Backend expects 'username' for login
+            password: formData.password 
+          };
       
       const response = await axios.post(endpoint, payload);
 
       if (response.status === 200 || response.status === 201) {
         toast.success(activeTab === 'signup' ? 'Account created successfully!' : 'Logged in successfully!', { theme: 'dark' });
+        
         if (response.data.token) {
           localStorage.setItem('token', response.data.token);
           setTimeout(() => router.push('/dashboard'), 1000);
         } else if (activeTab === 'signup') {
+          // Switch to login tab after successful signup
           setActiveTab('login');
           setFormData({ username: '', email: '', password: '' });
         }
       }
     } catch (error: any) {
+      console.error("Auth Error:", error); // Helpful for debugging
       const message = error.response?.data?.message || 'Something went wrong!';
       setFormError(message);
       toast.error(message, { theme: 'dark' });

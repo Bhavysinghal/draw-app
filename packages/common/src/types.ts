@@ -5,7 +5,7 @@ export const CreateUserSchema = z.object({
     .string()
     .trim()
     .min(3, "Username must be at least 3 characters")
-    .max(20, "Username too long"),
+    .max(50, "Username too long"),
 
   password: z
     .string()
@@ -22,7 +22,7 @@ export const SigninSchema = z.object({
     .string()
     .trim()
     .min(3)
-    .max(20),
+    .max(50),
 
   password: z.string().min(6),
 });
