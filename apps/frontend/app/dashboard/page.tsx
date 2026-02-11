@@ -44,8 +44,9 @@ import { Skeleton } from '@/components/ui/skeleton';
 import { cn } from '@/lib/utils';
 import { Card, CardContent, CardFooter, CardHeader } from '@/components/ui/card';
 
+// 🛠️ FIX 1: Changed _id to id to match Prisma Backend
 interface Room {
-  _id: string;
+  id: string | number; // Handles both Int and UUID
   slug: string;
   createdAt: string;
   adminId: any; 
@@ -87,7 +88,7 @@ const UserTooltip = ({ users }: { users: { name: string; id: string }[] }) => {
       ))}
       {users.length > 4 && (
          <div className="h-8 w-8 -ml-3 rounded-full border-2 border-background bg-muted flex items-center justify-center text-[10px] font-bold text-muted-foreground z-10">
-           +{users.length - 4}
+            +{users.length - 4}
          </div>
       )}
     </div>
@@ -109,8 +110,10 @@ function DashboardContent() {
   const [userData, setUserData] = useState<{ name: string; photo?: string } | null>(null);
   const [newRoomName, setNewRoomName] = useState('');
   const [creating, setCreating] = useState(false);
-  const [collabUsername, setCollabUsername] = useState('');
+  
+  // Collaborator State
   const [collabUseremail, setCollabUseremail] = useState('');
+  const [inviting, setInviting] = useState(false);
 
   const [loadingRooms, setLoadingRooms] = useState(true);
   const toastOptions = { position: 'top-right' as const, autoClose: 2000, theme: 'dark' as const };
@@ -145,7 +148,6 @@ function DashboardContent() {
     setLoadingRooms(true);
     try {
       const res = await axios.get(`${BACKEND_URL}/my-rooms`, {
-        // 👇 ADD "Bearer " HERE
         headers: { Authorization: `Bearer ${activeToken}` },
       });
       setRooms(res.data.rooms);
@@ -188,15 +190,39 @@ function DashboardContent() {
     finally { setCreating(false); }
   };
 
+  // 🛠️ FIX 2: Added function to actually invite collaborators
+  const handleAddCollaborator = async () => {
+    if (!selectedRoom || !collabUseremail || !token) return;
+    setInviting(true);
+
+    try {
+        const response = await axios.post(
+            `${BACKEND_URL}/rooms/${selectedRoom.id}/add-collaborator`,
+            { email: collabUseremail },
+            { headers: { Authorization: `Bearer ${token}` } }
+        );
+        toast.success(response.data.message || "Invitation sent!", toastOptions);
+        setShowAddUserDialog(false);
+        setCollabUseremail("");
+    } catch (e: any) {
+        const msg = e.response?.data?.message || "Failed to invite user";
+        toast.error(msg, toastOptions);
+    } finally {
+        setInviting(false);
+    }
+  };
+
   const joinRoom = async () => {
     if (!roomSlug) return;
     try {
       const res = await axios.get(`${BACKEND_URL}/room/${roomSlug}`);
-      if (res.data.room?._id) router.push(`/canvas/${res.data.room._id}`);
+      if (res.data.room?.id) router.push(`/canvas/${res.data.room.id}`);
     } catch (e) { toast.error("Room not found", toastOptions); }
   };
 
-  const deleteRoom = (roomId: string) => {
+  const deleteRoom = (roomId: string | number) => {
+    if(!confirm("Are you sure you want to delete this room?")) return;
+    
     axios.delete(`${BACKEND_URL}/room/${roomId}`, { headers: {Authorization: `Bearer ${token!}` } })
     .then(() => {
       toast.success("Room deleted successfully");
@@ -222,7 +248,7 @@ function DashboardContent() {
           </Breadcrumb>
         </header>
 
-        <main className="p-6 space-y-8 flex-1 flex flex-col">
+        <main className="p-6 space-y-8 flex-1 flex-col">
           
           {/* SEARCH & ACTIONS BAR */}
           <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
@@ -239,7 +265,7 @@ function DashboardContent() {
              <div className="flex items-center gap-3 w-full md:w-auto">
                 <div className="relative flex-1 md:w-auto">
                     <Input 
-                      placeholder="Enter Room ID" 
+                      placeholder="Enter Room Slug" 
                       value={roomSlug} 
                       onChange={(e) => setRoomSlug(e.target.value)}
                       className="bg-muted/40 border-border h-11 w-full md:w-48 pr-16 rounded-lg" 
@@ -283,18 +309,19 @@ function DashboardContent() {
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6 pb-12">
               {filteredRooms.map((room) => {
                  const currentUserId = getUserIdFromToken();
-                 const isAdmin = (room.adminId?._id || room.adminId) === currentUserId;
+                 // 🛠️ FIX: Use correct ID field for admin check
+                 const isAdmin = (room.adminId?.id || room.adminId) === currentUserId;
                  const allUsers = [
-                    { name: room.adminId?.name || "Admin", id: room.adminId?._id || "admin" },
-                    ...(room.collaborators?.map((c: any) => ({ name: c.name || "User", id: c._id })) || [])
+                    { name: room.adminId?.name || "Admin", id: String(room.adminId?.id || "admin") },
+                    ...(room.collaborators?.map((c: any) => ({ name: c.name || "User", id: String(c.id) })) || [])
                  ];
 
                  return (
-                   <Card key={room._id} className="group relative overflow-hidden transition-all hover:shadow-lg hover:border-primary/50 flex flex-col justify-between">
+                   <Card key={room.id} className="group relative overflow-hidden transition-all hover:shadow-lg hover:border-primary/50 flex flex-col justify-between">
                       <CardHeader className="p-5 pb-2">
                          <div className="flex items-start justify-between">
                             <div className="space-y-1">
-                               <h3 className="font-bold text-lg leading-tight line-clamp-1 group-hover:text-primary transition-colors cursor-pointer" onClick={() => router.push(`/canvas/${room._id}`)}>
+                               <h3 className="font-bold text-lg leading-tight line-clamp-1 group-hover:text-primary transition-colors cursor-pointer" onClick={() => router.push(`/canvas/${room.id}`)}>
                                  {room.slug}
                                </h3>
                                <div className="flex items-center gap-2 text-xs text-muted-foreground">
@@ -311,14 +338,14 @@ function DashboardContent() {
                               </DropdownMenuTrigger>
                               <DropdownMenuContent align="end">
                                 <DropdownMenuLabel>Options</DropdownMenuLabel>
-                                <DropdownMenuItem onClick={() => router.push(`/canvas/${room._id}`)}>
+                                <DropdownMenuItem onClick={() => router.push(`/canvas/${room.id}`)}>
                                   <Pencil className="mr-2 h-4 w-4" /> Open
                                 </DropdownMenuItem>
                                 <DropdownMenuItem onClick={() => { setSelectedRoom(room); setShowAddUserDialog(true); }}>
                                   <UserPlus className="mr-2 h-4 w-4" /> Invite
                                 </DropdownMenuItem>
                                 <DropdownMenuItem onClick={() => {
-                                  navigator.clipboard.writeText(`${window.location.origin}/canvas/${room._id}`);
+                                  navigator.clipboard.writeText(`${window.location.origin}/canvas/${room.id}`);
                                   toast.success("Link copied!");
                                 }}>
                                   <Share2 className="mr-2 h-4 w-4" /> Share
@@ -326,7 +353,7 @@ function DashboardContent() {
                                 {isAdmin && (
                                   <>
                                     <DropdownMenuSeparator />
-                                    <DropdownMenuItem onClick={() => deleteRoom(room._id)} className="text-destructive focus:text-destructive">
+                                    <DropdownMenuItem onClick={() => deleteRoom(room.id)} className="text-destructive focus:text-destructive">
                                       <Trash className="mr-2 h-4 w-4" /> Delete
                                     </DropdownMenuItem>
                                   </>
@@ -355,7 +382,7 @@ function DashboardContent() {
                          <Button 
                            variant="secondary" 
                            className="w-full rounded-none h-10 bg-muted/30 hover:bg-primary hover:text-primary-foreground transition-colors"
-                           onClick={() => router.push(`/canvas/${room._id}`)}
+                           onClick={() => router.push(`/canvas/${room.id}`)}
                          >
                            Enter Room
                          </Button>
@@ -397,15 +424,19 @@ function DashboardContent() {
           <DialogHeader><DialogTitle>Invite to {selectedRoom?.slug}</DialogTitle></DialogHeader>
           <div className="space-y-4 py-2">
              <div className="space-y-1">
-               <Label>Name</Label>
-               <Input placeholder="John Doe" value={collabUsername} onChange={e => setCollabUsername(e.target.value)} className="bg-background"/>
-             </div>
-             <div className="space-y-1">
-               <Label>Email</Label>
-               <Input placeholder="john@example.com" value={collabUseremail} onChange={e => setCollabUseremail(e.target.value)} className="bg-background"/>
+               <Label>User Email</Label>
+               <Input 
+                 placeholder="john@example.com" 
+                 value={collabUseremail} 
+                 onChange={e => setCollabUseremail(e.target.value)} 
+                 className="bg-background"
+               />
              </div>
           </div>
-          <Button className="w-full" onClick={() => setShowAddUserDialog(false)}>Send Invitation</Button>
+          {/* 🛠️ FIX 3: Connected the button to the function */}
+          <Button className="w-full" onClick={handleAddCollaborator} disabled={inviting}>
+            {inviting ? "Sending..." : "Send Invitation"}
+          </Button>
         </DialogContent>
       </Dialog>
     </div>

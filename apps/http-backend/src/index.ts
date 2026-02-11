@@ -267,17 +267,16 @@
 //   console.log("Server running on port 3001");
 // });
 
-
 import express from "express";
 import jwt from "jsonwebtoken";
 import bcrypt from "bcryptjs";
 import cors from "cors";
+import nodemailer from "nodemailer"; // 👈 New Import
 import { middleware } from "./auth.middleware";
 import { JWT_SECRET } from "@repo/backend-common/config";
 import { 
     CreateUserSchema,
-    SigninSchema, 
-    CreateRoomSchema 
+    SigninSchema 
 } from "@repo/common/types";
 import { prismaClient } from "@repo/db/client";
 
@@ -287,179 +286,188 @@ app.use(express.json());
 app.use(cors());
 
 /* -------------------------------------------------------------------------- */
-/* AUTH ROUTES                                  */
+/* AUTH ROUTES                                 */
 /* -------------------------------------------------------------------------- */
 
 app.post("/signup", async (req, res) => {
     const parsedData = CreateUserSchema.safeParse(req.body);
-    
-    // 🛠️ FIX: Return 400 status code for invalid inputs
     if (!parsedData.success) {
-        res.status(400).json({
-            message: "Incorrect inputs",
-            errors: parsedData.error
-        });
+        res.status(400).json({ message: "Incorrect inputs", errors: parsedData.error });
         return;
     }
-
     try {
         const hashedPassword = await bcrypt.hash(parsedData.data.password, 10);
-
         const user = await prismaClient.user.create({
             data: {
-                // We map the 'username' (which contains email from frontend) to the 'email' field in DB
                 email: parsedData.data.username, 
                 password: hashedPassword,
                 name: parsedData.data.name
             }
         });
-
-        res.json({
-            userId: user.id
-        });
+        res.json({ userId: user.id });
     } catch(e) {
-        res.status(409).json({
-            message: "User already exists with this email"
-        });
+        res.status(409).json({ message: "User already exists with this email" });
     }
 });
 
 app.post("/signin", async (req, res) => {
     const parsedData = SigninSchema.safeParse(req.body);
-
     if (!parsedData.success) {
-        res.status(400).json({
-            message: "Incorrect inputs"
-        });
+        res.status(400).json({ message: "Incorrect inputs" });
         return;
     }
 
     const user = await prismaClient.user.findFirst({
-        where: {
-            email: parsedData.data.username,
-        }
+        where: { email: parsedData.data.username }
     });
 
     if (!user) {
-        res.status(403).json({
-            message: "Invalid credentials",
-        });
+        res.status(403).json({ message: "Invalid credentials" });
         return;
     }
 
-    const isPasswordValid = await bcrypt.compare(
-        parsedData.data.password,
-        user.password
-    );
+    const isPasswordValid = await bcrypt.compare(parsedData.data.password, user.password);
 
     if (!isPasswordValid) {
-        res.status(403).json({
-            message: "Invalid credentials",
-        });
+        res.status(403).json({ message: "Invalid credentials" });
         return;
     }
 
-    const token = jwt.sign({
-        userId: user.id
-    }, JWT_SECRET); // Removed expiresIn for simplicity, or keep { expiresIn: "30d" }
-
-    res.json({
-        token
-    });
+    const token = jwt.sign({ userId: user.id }, JWT_SECRET);
+    res.json({ token });
 });
 
 /* -------------------------------------------------------------------------- */
-/* APP ROUTES                                   */
+/* ROOM ROUTES                                 */
 /* -------------------------------------------------------------------------- */
 
 app.post("/create-room", middleware, async (req, res) => {
     const { name } = req.body; 
-    
     if (!name) {
         res.status(400).json({ message: "Room name is required" });
         return;
     }
 
-    // Generate unique slug
     const slug = name.toLowerCase().replace(/ /g, '-') + '-' + Date.now();
 
     try {
         const room = await prismaClient.room.create({
             data: {
                 slug: slug,
-                adminId: req.userId! // 👈 Added ! to fix TypeScript error
+                adminId: req.userId!
             }
         });
-
-        res.json({
-            roomId: room.id
-        });
+        res.json({ roomId: room.id });
     } catch (e) {
-        res.status(500).json({
-            message: "Could not create room"
-        });
+        res.status(500).json({ message: "Could not create room" });
     }
 });
 
-app.get("/chats/:roomId", middleware, async (req, res) => {
-    try {
-        const roomId = Number(req.params.roomId);
-        const messages = await prismaClient.chat.findMany({
-            where: {
-                roomId: roomId
-            },
-            orderBy: {
-                id: "desc"
-            },
-            take: 50
-        });
-
-        res.json({
-            messages
-        });
-    } catch(e) {
-        res.json({
-            messages: []
-        });
-    }
-});
-
-// 👇 UNCOMMENTED AND FIXED THIS ROUTE
 app.get("/room/:slug", async (req, res) => {
     const slug = req.params.slug;
     try {
         const room = await prismaClient.room.findFirst({
-            where: {
-                slug
-            }
+            where: { slug }
         });
-
         if (!room) {
              res.status(404).json({ message: "Room not found" });
              return;
         }
-
-        res.json({
-            room
-        });
+        res.json({ room });
     } catch(e) {
-        res.status(500).json({
-            message: "Something went wrong"
+        res.status(500).json({ message: "Something went wrong" });
+    }
+});
+
+// 🚀 UPGRADE: Fetch rooms I own OR rooms I am a collaborator in
+app.get("/my-rooms", middleware, async (req, res) => {
+    const userId = req.userId;
+    try {
+        const rooms = await prismaClient.room.findMany({
+            where: {
+                OR: [
+                    { adminId: userId }, // My rooms
+                    { collaborators: { some: { id: userId } } } // Shared rooms
+                ]
+            },
+            orderBy: { createdAt: 'desc' }
         });
+        res.json({ rooms });
+    } catch (e) {
+        res.status(500).json({ message: "Something went wrong" });
     }
 });
 
 /* -------------------------------------------------------------------------- */
-/* DASHBOARD ROUTES                               */
+/* COLLABORATION ROUTES                            */
+/* -------------------------------------------------------------------------- */
+
+// 🚀 NEW FEATURE: Add Collaborator with Email Invite
+app.post('/rooms/:roomId/add-collaborator', middleware, async (req, res) => {
+const roomId = req.params.roomId as string;
+    const { email } = req.body; // Expecting email
+
+    if (!email) return res.status(400).json({ message: "Email is required" });
+
+    try {
+        // 1. Check if user exists
+        const userToAdd = await prismaClient.user.findFirst({
+            where: { email }
+        });
+
+        if (!userToAdd) {
+            // 📧 Send Email Invitation (If user doesn't exist)
+            try {
+                const transporter = nodemailer.createTransport({
+                    service: 'gmail',
+                    auth: {
+                        user: process.env.GMAIL_USER, // Add these to your .env
+                        pass: process.env.GMAIL_PASS,
+                    },
+                });
+
+                await transporter.sendMail({
+                    from: process.env.GMAIL_USER,
+                    to: email,
+                    subject: `Invitation to join SketchCalibur`,
+                    text: `You have been invited to collaborate! Please sign up here: http://localhost:3000/signup`,
+                });
+
+                return res.status(404).json({ message: "User not found, invitation sent!" });
+            } catch (mailErr) {
+                console.error("Mail error:", mailErr);
+                return res.status(500).json({ message: "User not found and failed to send email." });
+            }
+        }
+
+        // 2. Add user as collaborator
+        const roomIdNum = parseInt(roomId); // Ensure ID is a number/string based on your DB
+        
+        await prismaClient.room.update({
+            where: { id: roomIdNum },
+            data: {
+                collaborators: {
+                    connect: { id: userToAdd.id } // Connect the relation
+                }
+            }
+        });
+
+        res.json({ message: "Collaborator added successfully!" });
+    } catch (e) {
+        console.error(e);
+        res.status(500).json({ message: "Failed to add collaborator" });
+    }
+});
+
+/* -------------------------------------------------------------------------- */
+/* USER PROFILE ROUTES                             */
 /* -------------------------------------------------------------------------- */
 
 app.get("/me", middleware, async (req, res) => {
     const userId = req.userId;
     try {
         const user = await prismaClient.user.findFirst({
-            where: {
-                id: userId
-            }
+            where: { id: userId }
         });
         
         if (!user) {
@@ -475,32 +483,42 @@ app.get("/me", middleware, async (req, res) => {
             }
         });
     } catch (e) {
-        res.status(500).json({
-            message: "Something went wrong"
-        });
+        res.status(500).json({ message: "Something went wrong" });
     }
 });
 
-app.get("/my-rooms", middleware, async (req, res) => {
+// 🚀 NEW FEATURE: Update Profile
+app.put("/me", middleware, async (req, res) => {
     const userId = req.userId;
+    const { name, photo } = req.body;
 
     try {
-        const rooms = await prismaClient.room.findMany({
-            where: {
-                adminId: userId 
-            },
-            orderBy: {
-                createdAt: 'desc' 
-            }
+        const updatedUser = await prismaClient.user.update({
+            where: { id: userId },
+            data: { name, photo }
         });
 
-        res.json({
-            rooms
-        });
+        res.json({ message: "Profile updated", user: updatedUser });
     } catch (e) {
-        res.status(500).json({
-            message: "Something went wrong"
+        res.status(500).json({ message: "Error updating profile" });
+    }
+});
+
+/* -------------------------------------------------------------------------- */
+/* CHAT ROUTES                                 */
+/* -------------------------------------------------------------------------- */
+
+app.get("/chats/:roomId", middleware, async (req, res) => {
+    try {
+        const roomId = Number(req.params.roomId);
+        const messages = await prismaClient.chat.findMany({
+            where: { roomId: roomId },
+            orderBy: { id: "desc" },
+            take: 1000
         });
+        res.json({ messages });
+    } catch(e) {
+        res.json({ messages: [] });
     }
 });
 

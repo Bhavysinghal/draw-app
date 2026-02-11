@@ -4,7 +4,7 @@ generator client {
 
 datasource db {
   provider = "postgresql"
-  url      = "postgresql://neondb_owner:npg_aos4M2HiCKAS@ep-shiny-star-ahumjr3u-pooler.c-3.us-east-1.aws.neon.tech/neondb?sslmode=require&channel_binding=require"
+  url      = ""
 }
 
 model User {
@@ -13,17 +13,25 @@ model User {
   password String
   name     String
   photo    String?
-  rooms    Room[]
-  chats    Chat[]
+
+  chats       Chat[]
+  rooms       Room[] @relation("AdminRooms") // Rooms created/owned by this user
+  collabRooms Room[] @relation("CollabRooms") // Rooms where this user is a guest
 }
 
 model Room {
   id        Int      @id @default(autoincrement())
   slug      String   @unique
   createdAt DateTime @default(now())
-  adminId   String
-  admin     User     @relation(fields: [adminId], references: [id])
-  chats     Chat[]
+
+  // The Admin (Owner) of the room
+  adminId String
+  admin   User   @relation("AdminRooms", fields: [adminId], references: [id])
+
+  // The Collaborators (Guests) - Many-to-Many relationship
+  collaborators User[] @relation("CollabRooms")
+
+  chats Chat[]
 }
 
 model Chat {
@@ -31,6 +39,7 @@ model Chat {
   roomId  Int
   message String
   userId  String
-  room    Room   @relation(fields: [roomId], references: [id])
-  user    User   @relation(fields: [userId], references: [id])
+
+  room Room @relation(fields: [roomId], references: [id])
+  user User @relation(fields: [userId], references: [id])
 }
