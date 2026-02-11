@@ -143,7 +143,7 @@ function ProfileContent() {
           ) : (
             <FreelancerProfileCard
               name={userData?.name || "User"}
-              title={userData?.email || "SketchCalibur User"}
+              title={userData?.email || "DrawSync User"}
               avatarSrc={
                 userData?.photo ||
                 `https://ui-avatars.com/api/?name=${userData?.name}&background=random&color=fff`

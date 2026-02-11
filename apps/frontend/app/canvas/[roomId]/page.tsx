@@ -6,7 +6,6 @@ import '@excalidraw/excalidraw/index.css';
 import { RoomChat } from '@/components/RoomChat';
 import { useParams } from 'next/navigation';
 import { BACKEND_URL, WSS_URL } from '../../../config';
-import { convertToExcalidrawElements } from '@excalidraw/excalidraw';
 
 const Excalidraw = dynamic(
   () => import('@excalidraw/excalidraw').then((mod) => mod.Excalidraw),
@@ -380,7 +379,7 @@ User Request: ${aiPrompt}`
         }
         return el;
       });
-
+        const { convertToExcalidrawElements } = await import("@excalidraw/excalidraw");
       const aiElements = convertToExcalidrawElements(fixedJson, { regenerateIds: false });
       const currentElements = excalidrawAPIRef.current.getSceneElements();
       const merged = mergeElements(currentElements, aiElements);

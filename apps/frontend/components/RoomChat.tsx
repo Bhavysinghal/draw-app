@@ -26,14 +26,24 @@ export function RoomChat({ roomId, ws, currentUserId }: any) {
   }, [ws]);
 
   // Load History
+  // Load History
   useEffect(() => {
     const loadHistory = async () => {
       try {
-        const res = await axios.get(`${BACKEND_URL}/rooms/${roomId}/messages`, {
-          headers: { Authorization: localStorage.getItem('token') }
+        // 1. Check if token exists to avoid sending "Bearer null"
+        const token = localStorage.getItem('token');
+        if (!token) return;
+
+        // 2. Fix the URL to match backend ("/chats/:roomId")
+        // 3. Fix the Header to include "Bearer "
+        const res = await axios.get(`${BACKEND_URL}/chats/${roomId}`, {
+          headers: { Authorization: `Bearer ${token}` } 
         });
+        
         setMessages(res.data.messages || []);
-      } catch (e) { console.error("History failed", e); }
+      } catch (e) { 
+        console.error("History failed", e); 
+      }
     };
     if (roomId) loadHistory();
   }, [roomId]);

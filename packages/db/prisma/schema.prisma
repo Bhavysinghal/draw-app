@@ -4,15 +4,16 @@ generator client {
 
 datasource db {
   provider = "postgresql"
-  url      = ""
+  url      = "postgresql://neondb_owner:npg_aos4M2HiCKAS@ep-shiny-star-ahumjr3u-pooler.c-3.us-east-1.aws.neon.tech/neondb?sslmode=require&channel_binding=require"
 }
 
 model User {
   id       String  @id @default(uuid())
   email    String  @unique
-  password String
-  name     String
+  password String?
+  name     String?
   photo    String?
+  googleId String? @unique // 👈 Add this new field
 
   chats       Chat[]
   rooms       Room[] @relation("AdminRooms") // Rooms created/owned by this user

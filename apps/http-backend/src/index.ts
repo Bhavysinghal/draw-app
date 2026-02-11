@@ -266,12 +266,12 @@
 // app.listen(3001,() => {
 //   console.log("Server running on port 3001");
 // });
-
 import express from "express";
+import axios from "axios";
 import jwt from "jsonwebtoken";
 import bcrypt from "bcryptjs";
 import cors from "cors";
-import nodemailer from "nodemailer"; // 👈 New Import
+import nodemailer from "nodemailer";
 import { middleware } from "./auth.middleware";
 import { JWT_SECRET } from "@repo/backend-common/config";
 import { 
@@ -283,11 +283,91 @@ import { prismaClient } from "@repo/db/client";
 const app = express();
 
 app.use(express.json());
-app.use(cors());
+app.use(cors({
+    origin: ["http://localhost:3000", "https://your-production-domain.com"],
+    credentials: true
+}));
+
+const FRONTEND_URL = process.env.FRONTEND_URL || "http://localhost:3000";
 
 /* -------------------------------------------------------------------------- */
-/* AUTH ROUTES                                 */
+/* AUTH ROUTES                                                                */
 /* -------------------------------------------------------------------------- */
+
+// 1. Google Auth Redirect
+app.get("/auth/google", (req, res) => {
+    const url = `https://accounts.google.com/o/oauth2/v2/auth?client_id=${process.env.GOOGLE_CLIENT_ID}&redirect_uri=${process.env.GOOGLE_REDIRECT_URI}&response_type=code&scope=profile email`;
+    res.redirect(url);
+});
+
+// 2. Google Callback
+app.get("/auth/google/callback", async (req, res) => {
+    const { code } = req.query;
+
+    if (!code) {
+        res.status(400).send("No code provided");
+        return;
+    }
+
+    try {
+        // A. Exchange code for tokens
+        const { data } = await axios.post("https://oauth2.googleapis.com/token", {
+            client_id: process.env.GOOGLE_CLIENT_ID,
+            client_secret: process.env.GOOGLE_CLIENT_SECRET,
+            code,
+            grant_type: "authorization_code",
+            redirect_uri: process.env.GOOGLE_REDIRECT_URI,
+        });
+
+        const { access_token } = data;
+
+        // B. Get User Info from Google
+        const { data: googleUser } = await axios.get("https://www.googleapis.com/oauth2/v1/userinfo", {
+            headers: { Authorization: `Bearer ${access_token}` },
+        });
+
+        const { email, name, picture, id: googleId } = googleUser;
+
+        // C. Find or Create User
+        let user = await prismaClient.user.findFirst({
+            where: { email }
+        });
+
+        if (!user) {
+            // Create new user
+            user = await prismaClient.user.create({
+                data: {
+                    email,
+                    name,
+                    photo: picture,
+                    googleId,
+                    password: "" // No password for Google users
+                }
+            });
+        } else {
+             // Link Google ID to existing account if missing
+             if (!user.googleId) {
+                 user = await prismaClient.user.update({
+                     where: { id: user.id },
+                     data: { googleId, photo: picture || user.photo }
+                 });
+             }
+        }
+
+        // D. Generate JWT
+        const token = jwt.sign({ 
+            userId: user.id,
+            name: user.name 
+        }, JWT_SECRET);
+
+        // E. Redirect to Frontend with Token
+        res.redirect(`${FRONTEND_URL}/auth/callback?token=${token}`);
+
+    } catch (error) {
+        console.error("Google Auth Error:", error);
+        res.status(500).send("Authentication failed");
+    }
+});
 
 app.post("/signup", async (req, res) => {
     const parsedData = CreateUserSchema.safeParse(req.body);
@@ -326,6 +406,12 @@ app.post("/signin", async (req, res) => {
         return;
     }
 
+    // ✅ FIX: Check if user has a password (if null, they likely used Google)
+    if (!user.password) {
+        res.status(403).json({ message: "Invalid credentials. Please login with Google." });
+        return;
+    }
+
     const isPasswordValid = await bcrypt.compare(parsedData.data.password, user.password);
 
     if (!isPasswordValid) {
@@ -333,12 +419,16 @@ app.post("/signin", async (req, res) => {
         return;
     }
 
-    const token = jwt.sign({ userId: user.id }, JWT_SECRET);
+    const token = jwt.sign({ 
+        userId: user.id,
+        name: user.name 
+    }, JWT_SECRET);
+    
     res.json({ token });
 });
 
 /* -------------------------------------------------------------------------- */
-/* ROOM ROUTES                                 */
+/* ROOM ROUTES                                                                */
 /* -------------------------------------------------------------------------- */
 
 app.post("/create-room", middleware, async (req, res) => {
@@ -379,7 +469,7 @@ app.get("/room/:slug", async (req, res) => {
     }
 });
 
-// 🚀 UPGRADE: Fetch rooms I own OR rooms I am a collaborator in
+// Fetch rooms I own OR rooms I am a collaborator in
 app.get("/my-rooms", middleware, async (req, res) => {
     const userId = req.userId;
     try {
@@ -399,12 +489,12 @@ app.get("/my-rooms", middleware, async (req, res) => {
 });
 
 /* -------------------------------------------------------------------------- */
-/* COLLABORATION ROUTES                            */
+/* COLLABORATION ROUTES                                                       */
 /* -------------------------------------------------------------------------- */
 
-// 🚀 NEW FEATURE: Add Collaborator with Email Invite
+// Add Collaborator with Email Invite
 app.post('/rooms/:roomId/add-collaborator', middleware, async (req, res) => {
-const roomId = req.params.roomId as string;
+    const roomId = req.params.roomId as string;
     const { email } = req.body; // Expecting email
 
     if (!email) return res.status(400).json({ message: "Email is required" });
@@ -421,7 +511,7 @@ const roomId = req.params.roomId as string;
                 const transporter = nodemailer.createTransport({
                     service: 'gmail',
                     auth: {
-                        user: process.env.GMAIL_USER, // Add these to your .env
+                        user: process.env.GMAIL_USER,
                         pass: process.env.GMAIL_PASS,
                     },
                 });
@@ -429,8 +519,8 @@ const roomId = req.params.roomId as string;
                 await transporter.sendMail({
                     from: process.env.GMAIL_USER,
                     to: email,
-                    subject: `Invitation to join SketchCalibur`,
-                    text: `You have been invited to collaborate! Please sign up here: http://localhost:3000/signup`,
+                    subject: `Invitation to join DrawSync`,
+                    text: `You have been invited to collaborate! Please sign up here: ${FRONTEND_URL}/signup`,
                 });
 
                 return res.status(404).json({ message: "User not found, invitation sent!" });
@@ -441,13 +531,13 @@ const roomId = req.params.roomId as string;
         }
 
         // 2. Add user as collaborator
-        const roomIdNum = parseInt(roomId); // Ensure ID is a number/string based on your DB
+        const roomIdNum = parseInt(roomId); 
         
         await prismaClient.room.update({
             where: { id: roomIdNum },
             data: {
                 collaborators: {
-                    connect: { id: userToAdd.id } // Connect the relation
+                    connect: { id: userToAdd.id }
                 }
             }
         });
@@ -460,7 +550,7 @@ const roomId = req.params.roomId as string;
 });
 
 /* -------------------------------------------------------------------------- */
-/* USER PROFILE ROUTES                             */
+/* USER PROFILE ROUTES                                                        */
 /* -------------------------------------------------------------------------- */
 
 app.get("/me", middleware, async (req, res) => {
@@ -487,7 +577,7 @@ app.get("/me", middleware, async (req, res) => {
     }
 });
 
-// 🚀 NEW FEATURE: Update Profile
+// Update Profile
 app.put("/me", middleware, async (req, res) => {
     const userId = req.userId;
     const { name, photo } = req.body;
@@ -505,7 +595,7 @@ app.put("/me", middleware, async (req, res) => {
 });
 
 /* -------------------------------------------------------------------------- */
-/* CHAT ROUTES                                 */
+/* CHAT ROUTES                                                                */
 /* -------------------------------------------------------------------------- */
 
 app.get("/chats/:roomId", middleware, async (req, res) => {

@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useRef } from "react";
+import React, { useRef, useState, useEffect } from "react";
 import Link from "next/link";
 import { useTheme } from "next-themes";
 import { 
@@ -106,7 +106,13 @@ function DockItem({
 
 const FloatingDock = () => {
   const { setTheme, theme } = useTheme();
+  const [mounted, setMounted] = useState(false); // 1. Add mounted state
   const mouseX = useMotionValue(Infinity);
+
+  // 2. Set mounted to true only after client-side hydration is complete
+  useEffect(() => {
+    setMounted(true);
+  }, []);
 
   return (
     <motion.div
@@ -115,7 +121,6 @@ const FloatingDock = () => {
       initial={{ y: -100, opacity: 0 }}
       animate={{ y: 0, opacity: 1 }}
       transition={{ duration: 0.8, ease: "easeOut" }}
-      // Updated: Removed h-24, changed py-3 to py-2, changed items-end to items-center
       className="fixed top-10 left-1/2 -translate-x-1/2 z-50 flex items-center gap-3 px-4 py-2 rounded-full bg-background/20 backdrop-blur-lg border border-white/20 shadow-2xl ring-1 ring-black/5"
     >
       {/* 1. Home Icon */}
@@ -127,9 +132,10 @@ const FloatingDock = () => {
       />
 
       {/* 2. Theme Toggle Icon */}
+      {/* 👇 FIX: Show Moon (default) until mounted, then show correct icon */}
       <DockItem 
         mouseX={mouseX} 
-        icon={theme === "dark" ? Sun : Moon}
+        icon={!mounted ? Moon : (theme === "dark" ? Sun : Moon)}
         onClick={() => setTheme(theme === "dark" ? "light" : "dark")}
         label="Toggle Theme"
       />
@@ -147,7 +153,7 @@ const FloatingDock = () => {
       {/* 4. Sign In (Text) */}
       <DockItem 
         mouseX={mouseX} 
-        href="/auth" 
+        href="/auth?mode=signin" 
         label="Sign In" 
       />
 
@@ -370,7 +376,6 @@ const DashboardPreview = () => {
           <div className="w-3 h-3 rounded-full bg-emerald-400/80" />
         </div>
         <div className="mx-auto w-1/3 h-5 bg-background/50 rounded-md text-[10px] flex items-center justify-center text-muted-foreground font-mono">
-          sketchcalibur.com/room/ugly-ideas-101
         </div>
       </div>
 
@@ -496,7 +501,7 @@ export default function Home() {
 
         {/* About Section Anchor */}
         <div id="about" className="mt-32 max-w-2xl text-center space-y-6">
-          <h2 className="text-3xl font-bold">What is Sketchcalibur?</h2>
+          <h2 className="text-3xl font-bold">What is DrawSync?</h2>
           <p className="text-muted-foreground">
             It's a monorepo-architected, WebSocket-powered, JWT-secured collaborative drawing tool. 
             Designed for low-latency synchronization and high-fidelity chaos. 

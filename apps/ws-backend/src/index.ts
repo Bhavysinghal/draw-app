@@ -48,6 +48,19 @@ wss.on("connection", (ws, request) => {
   };
 
   users.push(user);
+//   const pingInterval = setInterval(() => {
+//     if (ws.readyState === ws.OPEN) {
+//         ws.ping();
+//     }
+// }, 30000);
+
+// ws.on("close", () => {
+//     clearInterval(pingInterval); // Clear interval when user disconnects
+//     const index = users.findIndex((u) => u.ws === ws);
+//     if (index !== -1) {
+//         users.splice(index, 1);
+//     }
+// });
 
   /* ------------------ MESSAGE ------------------ */
   ws.on("message", async (data) => {
@@ -80,36 +93,95 @@ wss.on("connection", (ws, request) => {
       return;
     }
 
-    /* -------- CHAT -------- */
-    if (parsedData.type === "chat") {
+/* -------- DRAWING (Missing) -------- */
+    if (parsedData.type === "drawing") {
       const roomId = Number(parsedData.roomId);
-      const message = parsedData.message;
+      const elements = parsedData.elements;
+      const clientId = parsedData.clientId;
 
-      if (!roomId || typeof message !== "string") return;
-
-      await prismaClient.chat.create({
-        data: {
-          roomId,
-          message,
-          userId,
-        },
-      });
-
+      // Broadcast to everyone in the room EXCEPT the sender
       users.forEach((u) => {
-        if (
-          u.rooms.includes(roomId) &&
-          u.ws.readyState === WebSocket.OPEN
-        ) {
-          u.ws.send(
-            JSON.stringify({
-              type: "chat",
-              roomId,
-              message,
-              userId,
-            })
-          );
+        if (u.ws !== ws && u.rooms.includes(roomId) && u.ws.readyState === WebSocket.OPEN) {
+          u.ws.send(JSON.stringify({
+            type: "drawing",
+            roomId,
+            elements,
+            clientId
+          }));
         }
       });
+    }
+
+    /* -------- CURSOR (Missing) -------- */
+    if (parsedData.type === "cursor") {
+      const roomId = Number(parsedData.roomId);
+      const pointer = parsedData.pointer;
+      const clientId = parsedData.clientId;
+      const color = parsedData.color;
+
+      // Optimisation: If Frontend sends username, use it. Otherwise, fetch from DB.
+      // Your Frontend (CanvasPage.tsx) DOES send the username, so we can use it directly
+      // instead of hitting the DB 60 times a second like File 2 does.
+      const username = parsedData.username || "Anonymous"; 
+
+      users.forEach((u) => {
+        if (u.ws !== ws && u.rooms.includes(roomId) && u.ws.readyState === WebSocket.OPEN) {
+          u.ws.send(JSON.stringify({
+            type: "cursor",
+            roomId,
+            pointer,
+            clientId,
+            color,
+            username 
+          }));
+        }
+      });
+    }    /* -------- CHAT -------- */
+    if (parsedData.type === "chat") {
+      const roomId = Number(parsedData.roomId);
+      const content = parsedData.content; // 👈 FIX 1: Read 'content', not 'message'
+
+      if (!roomId || typeof content !== "string") return; // Validate content
+
+      try {
+        // 1. Save to DB & Fetch User Details (Prisma Version of 'populate')
+        const chatEntry = await prismaClient.chat.create({
+          data: {
+            roomId,
+            message: content,
+            userId
+          },
+          include: {
+            user: true // 👈 FIX 2: Get user name/photo to show in UI
+          }
+        });
+
+        // 2. Broadcast the FULL object to everyone
+        users.forEach((u) => {
+          if (
+            u.rooms.includes(roomId) &&
+            u.ws.readyState === WebSocket.OPEN
+          ) {
+            u.ws.send(
+              JSON.stringify({
+                type: "chat",
+                roomId,
+                message: { // 👈 FIX 3: Send structure matching Frontend expectation
+                  id: chatEntry.id,
+                  content: chatEntry.message,
+                  userId: {
+                    id: chatEntry.user.id,
+                    name: chatEntry.user.name,
+                    photo: chatEntry.user.photo
+                  }
+                }
+              })
+            );
+          }
+        });
+      } catch (e) {
+        console.error("Chat error:", e);
+      }
     }
   });
 
