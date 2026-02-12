@@ -7,15 +7,11 @@ export default function AuthCallback() {
   const router = useRouter();
 
   useEffect(() => {
-    // ⚠️ DISABLED FOR BUILD: We removed useSearchParams to fix the deployment error.
-    // We will re-add the token logic later.
+    // ⚠️ Logic removed to fix Vercel Build Error
+    // We will add the token extraction back after the site is deployed.
     
-    // For now, just redirect to dashboard after a brief delay
-    const timer = setTimeout(() => {
-      router.push('/dashboard');
-    }, 2000);
-
-    return () => clearTimeout(timer);
+    // Simple redirect to dashboard
+    router.push('/dashboard');
   }, [router]);
 
   return (
