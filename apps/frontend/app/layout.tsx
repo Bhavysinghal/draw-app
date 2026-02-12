@@ -15,7 +15,7 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Sketchcalibur",
+  title: "DrawSync",
   description: "Canvas Board",
 };
 

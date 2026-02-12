@@ -21,8 +21,13 @@ interface CursorPosition {
 }
 
 export default function CanvasPage() {
-  const { roomId } = useParams();
+  // 1. Get the Slug from the URL
+  const params = useParams();
+  const roomSlug = params.roomId as string; 
   
+  // 2. State for the actual Numeric ID (fetched from backend)
+  const [roomId, setRoomId] = useState<number | null>(null);
+
   const wsRef = useRef<WebSocket | null>(null);
   const excalidrawAPIRef = useRef<any>(null); 
   const reconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null);
@@ -37,10 +42,29 @@ export default function CanvasPage() {
   const [copied, setCopied] = useState(false);
   const [currentUserId, setCurrentUserId] = useState<string | null>(null);
 
-  /* AI STATE */
-  const [showAIModal, setShowAIModal] = useState(false);
-  const [aiPrompt, setAiPrompt] = useState('');
-  const [aiLoading, setAiLoading] = useState(false);
+  // New State for Invite and Save features
+  const [inviteEmail, setInviteEmail] = useState('');
+  const [inviteStatus, setInviteStatus] = useState<'idle' | 'sending' | 'sent' | 'error'>('idle');
+  const [lastSaved, setLastSaved] = useState<Date | null>(null);
+
+  /* AI STATE (Commented Out) */
+  // const [showAIModal, setShowAIModal] = useState(false);
+  // const [aiPrompt, setAiPrompt] = useState('');
+  // const [aiLoading, setAiLoading] = useState(false);
+
+  // 0. Resolve Slug to Numeric ID
+  useEffect(() => {
+    if (!roomSlug) return;
+    
+    fetch(`${BACKEND_URL}/room/${roomSlug}`)
+      .then(res => res.json())
+      .then(data => {
+        if (data.room?.id) {
+          setRoomId(data.room.id);
+        }
+      })
+      .catch(e => console.error("Failed to resolve room slug"));
+  }, [roomSlug]);
 
   // 1. Initialize User Data from JWT
   useEffect(() => {
@@ -58,9 +82,10 @@ export default function CanvasPage() {
     }
   }, []);
 
-  // 2. Load Drawing History
+  // 2. Load Drawing History (Waits for roomId)
   useEffect(() => {
-    if (!roomId) return;
+    if (!roomId) return; 
+    
     fetch(`${BACKEND_URL}/chats/${roomId}`)
       .then(res => res.json())
       .then(data => {
@@ -86,7 +111,7 @@ export default function CanvasPage() {
       });
   }, [roomId]);
 
-  // 3. WebSocket Lifecycle
+  // 3. WebSocket Lifecycle (Waits for roomId)
   useEffect(() => {
     const token = localStorage.getItem('token');
     if (!token || !roomId) return;
@@ -144,7 +169,9 @@ export default function CanvasPage() {
 
   // 4. Interaction Handlers
   const handleChange = (elements: readonly any[]) => {
-    if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
+    // Added check: Do not send if roomId is not yet resolved
+    if (!roomId || !wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
+    
     if (sendElementsTimer.current) clearTimeout(sendElementsTimer.current);
     sendElementsTimer.current = setTimeout(() => {
       wsRef.current?.send(JSON.stringify({
@@ -157,7 +184,9 @@ export default function CanvasPage() {
   };
 
   const handlePointerUpdate = (payload: any) => {
-    if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
+    // Added check: Do not send if roomId is not yet resolved
+    if (!roomId || !wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
+    
     wsRef.current.send(JSON.stringify({
       type: 'cursor',
       clientId: clientId.current,
@@ -168,233 +197,7 @@ export default function CanvasPage() {
     }));
   };
 
-  // 5. AI Magic Logic
-  const generateFromAI = async () => {
-    if (!aiPrompt.trim() || !excalidrawAPIRef.current) return;
-    setAiLoading(true);
-
-    try {
-      const res = await fetch(
-        `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${process.env.NEXT_PUBLIC_GEMINI_API_KEY}`,
-        {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            contents: [{
-              role: 'user',
-              parts: [{
-                text: `Act as an Excalidraw Architect. Your sole purpose is to transform natural language descriptions into a valid JSON array of ExcalidrawElementSkeleton objects.
-
-
-
-🛑 STRICT OUTPUT RULES:
-
-OUTPUT ONLY RAW JSON. No markdown formatting, no code blocks (unless requested), no preamble, and no post-explanation.
-
-
-
-FORMAT: Use the convertToExcalidrawElements Skeleton API format.
-
-
-
-COORDINATES: Every element must have absolute x and y values. Calculate these logically to prevent overlapping unless requested.
-
-
-
-🛠 ELEMENT CONSTRUCTION GUIDE:
-
-1. Basic Shapes (Rectangle, Ellipse, Diamond)
-
-Use type: "rectangle" | "ellipse" | "diamond".
-
-
-
-Attributes: width, height, backgroundColor, strokeWidth, strokeColor.
-
-
-
-Styles: strokeStyle ("solid", "dashed", "dotted") and fillStyle ("solid", "cross-hatch").
-
-
-
-Example: { "type": "diamond", "x": 550, "y": 250, "width": 200, "height": 100, "backgroundColor": "#a5d8ff", "strokeStyle": "dashed" }
-
-
-
-2. Text Elements
-
-Use type: "text".
-
-
-
-Attributes: text, fontSize, strokeColor.
-
-
-
-Example: { "type": "text", "x": 100, "y": 150, "text": "Label", "fontSize": 20 }
-
-
-
-3. Text Containers (Shapes with Labels)
-
-To put text inside a shape, use the label property.
-
-
-
-Required: label: { text: "..." }.
-
-
-
-Optional: textAlign ("left", "center", "right"), verticalAlign ("top", "middle"), fontSize, strokeColor.
-
-
-
-Example: { "type": "rectangle", "x": 180, "y": 150, "label": { "text": "Header", "textAlign": "left", "verticalAlign": "top" } }
-
-
-
-4. Lines and Arrows
-
-Use type: "line" | "arrow".
-
-
-
-Arrowheads: startArrowhead and endArrowhead (e.g., "dot", "triangle", "arrow", "bar").
-
-
-
-Labels: Arrows can also take a label object just like shapes.
-
-
-
-Example: { "type": "arrow", "x": 100, "y": 100, "label": { "text": "Flow" }, "endArrowhead": "triangle" }
-
-
-
-5. Element Binding (Connections)
-
-To connect an arrow between two elements, use the start and end objects.
-
-
-
-Binding by ID: Assign a unique id to shapes and reference them in the arrow.
-
-
-
-Binding by Type: If IDs are not used, use type within the start/end objects.
-
-
-
-Example: { "type": "arrow", "start": { "id": "rect1" }, "end": { "id": "diam1" }, "label": { "text": "Yes" } }
-
-
-
-6. Frames
-
-Group elements using type: "frame".
-
-
-
-Attributes: name, children: ["id1", "id2"].
-
-
-
-🎨 DESIGN PRINCIPLES:
-
-Spacing: Maintain at least 600-1000 units of padding between distinct shapes.
-
-Color Palette: Use professional, muted hex codes (e.g., #c0eb75 for success, #ffc9c9 for errors, #a5d8ff for info).
-
-Flowcharts: Always use diamond for decision nodes and rectangle for process steps and use labelled arrows for flows.
-
-
-
-### CRITICAL INSTRUCTIONS FOR ARROWS:
-
-1. ARROW COORDINATES: Every arrow MUST have an "x" and "y" property. Set them equal to the "x" and "y" of the 'start' element.
-2. BINDING: Use "start": { "id": "source_id" } and "end": { "id": "target_id" }.
-3. UNIQUE IDS: Assign every rectangle/ellipse a unique "id" (e.g., "api_gateway") so arrows can bind to them.
-4. LABELS: Use the "label" object inside arrows for text.
-5. For every 'arrow' type, set the 'x' and 'y' properties to exactly match the 'x' and 'y' of the element it is starting from. Do not leave them as 0
-
-### EXAMPLE ARROW STRUCTURE:
-
-{
-
-  "id": "arrow_1",
-
-  "type": "arrow",
-
-  "x": 100, // Must match start element x
-
-  "y": 150, // Must match start element y
-
-  "start": { "id": "node_a" },
-
-  "end": { "id": "node_b" },
-
-  "label": { "text": "Flow" }
-
-}
-
-### SPATIAL LAYOUT INSTRUCTIONS:
-
-1. SPREAD OUT: Use a coordinate space of at least 1500 units wide.
-2. NO CROWDING: Maintain a minimum horizontal gap of 250 units and vertical gap of 200 units between any two shapes.
-3. LAYERED ARCHITECTURE:
-   - Row 1 (y=100): Clients/Users
-   - Row 2 (y=350): Gateway/Load Balancer
-   - Row 3 (y=600): Microservices
-   - Row 4 (y=850): Databases/Storage
-4. ALIGNMENT: Group related items vertically. For example, if a service uses a specific DB, place the DB directly below that service (same x-coordinate).
-
-5. ARROWS: Always include 'start' and 'end' bindings with the correct element 'id'.
-User Request: ${aiPrompt}`
-              }]
-            }]
-          }),
-        }
-      );
-
-      const data = await res.json();
-      const aiText = data?.candidates?.[0]?.content?.parts?.[0]?.text;
-      const jsonMatch = aiText.match(/\[.*\]/s);
-      if (!jsonMatch) throw new Error("Invalid AI Response");
-      
-      const parsedJson = JSON.parse(jsonMatch[0]);
-      
-      // Fix arrow positions
-      const fixedJson = parsedJson.map((el: any) => {
-        if (el.type === "arrow" && el.start?.id && el.end?.id) {
-          const source = parsedJson.find((s: any) => s.id === el.start.id);
-          const target = parsedJson.find((t: any) => t.id === el.end.id);
-          if (source && target) {
-            return {
-              ...el,
-              x: source.x + (source.width || 100) / 2,
-              y: source.y + (source.height || 50) / 2,
-              points: [[0, 0], [target.x - source.x, target.y - source.y]]
-            };
-          }
-        }
-        return el;
-      });
-        const { convertToExcalidrawElements } = await import("@excalidraw/excalidraw");
-      const aiElements = convertToExcalidrawElements(fixedJson, { regenerateIds: false });
-      const currentElements = excalidrawAPIRef.current.getSceneElements();
-      const merged = mergeElements(currentElements, aiElements);
-
-      excalidrawAPIRef.current.updateScene({ elements: merged });
-      setShowAIModal(false);
-      setAiPrompt('');
-    } catch (e) {
-      alert('AI Generation Failed');
-    } finally {
-      setAiLoading(false);
-    }
-  };
-
-  // 6. Original Functionalities (Save/Share)
+  // 6. Functionalities (Save/Share)
   const handleSaveToServer = async () => {
     const token = localStorage.getItem('token');
     const elements = excalidrawAPIRef.current?.getSceneElements();
@@ -408,16 +211,56 @@ User Request: ${aiPrompt}`
       });
       if (res.ok) {
         setSaveStatus('saved');
+        setLastSaved(new Date()); 
         setTimeout(() => setSaveStatus('idle'), 1500);
       }
     } catch (e) { setSaveStatus('idle'); }
+  };
+
+  // Keyboard Shortcut
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key === 's') {
+        e.preventDefault();
+        handleSaveToServer();
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [roomId]);
+
+  // Handle Collaborator Invite
+  const handleInvite = async () => {
+    if (!inviteEmail || !roomId) return;
+    setInviteStatus('sending');
+    const token = localStorage.getItem('token');
+    
+    try {
+      const res = await fetch(`${BACKEND_URL}/rooms/${roomId}/add-collaborator`, {
+        method: 'POST',
+        headers: { 
+          'Content-Type': 'application/json',
+          Authorization: `${token}` 
+        },
+        body: JSON.stringify({ email: inviteEmail })
+      });
+
+      if (res.ok) {
+        setInviteStatus('sent');
+        setTimeout(() => setInviteStatus('idle'), 3000);
+        setInviteEmail('');
+      } else {
+        setInviteStatus('error');
+      }
+    } catch (e) {
+      setInviteStatus('error');
+    }
   };
 
   const handleShare = () => { setShowShare(true); setCopied(false); };
   const handleCopyLink = () => {
     navigator.clipboard.writeText(window.location.href);
     setCopied(true);
-    setTimeout(() => setShowShare(false), 1000);
   };
 
   return (
@@ -433,71 +276,97 @@ User Request: ${aiPrompt}`
       />
 
       {/* Unified Bottom UI */}
-      <div className="fixed bottom-4 left-1/2 -translate-x-1/2 z-50 flex items-center gap-3 bg-white/90 backdrop-blur-md px-4 py-2 rounded-xl shadow-lg border border-slate-200">
-        <button 
-          onClick={() => setShowAIModal(true)} 
-          className="px-4 py-1.5 bg-gradient-to-r from-purple-600 to-blue-600 text-white rounded-lg text-sm font-semibold hover:opacity-90 transition shadow-sm"
-        >
-          AI Magic ✨
-        </button>
+      <div className="fixed bottom-4 left-1/2 -translate-x-1/2 z-50 flex flex-col items-center gap-2">
+        {/* Last Saved Indicator */}
+        {lastSaved && (
+          <span className="text-xs text-gray-500 font-medium bg-white/80 px-2 py-0.5 rounded-full shadow-sm">
+            Last saved: {lastSaved.toLocaleTimeString()}
+          </span>
+        )}
 
-        <button
-          onClick={handleSaveToServer}
-          disabled={saveStatus === 'saving'}
-          className={`text-sm font-semibold rounded-lg px-4 py-1.5 shadow transition-all duration-200
-            ${saveStatus === 'saved' ? 'bg-yellow-300 text-slate-800' : 'bg-blue-600 text-white'}
-            ${saveStatus === 'saving' ? 'opacity-60 cursor-not-allowed' : 'hover:bg-blue-700'}
-          `}
-        >
-          {saveStatus === 'saved' ? 'Saved!' : 'Save'}
-        </button>
+        <div className="flex items-center gap-3 bg-white/90 backdrop-blur-md px-4 py-2 rounded-xl shadow-lg border border-slate-200">
+          <button
+            onClick={handleSaveToServer}
+            disabled={saveStatus === 'saving'}
+            className={`text-sm font-semibold rounded-lg px-4 py-1.5 shadow transition-all duration-200 flex items-center gap-2
+              ${saveStatus === 'saved' ? 'bg-green-100 text-green-700' : 'bg-slate-900 text-white'}
+              ${saveStatus === 'saving' ? 'opacity-60 cursor-not-allowed' : 'hover:opacity-90'}
+            `}
+          >
+            {saveStatus === 'saving' ? (
+              <>Saving...</>
+            ) : saveStatus === 'saved' ? (
+              <>Saved ✓</>
+            ) : (
+              <>Save <span className="text-[10px] opacity-60 ml-1">⌘S</span></>
+            )}
+          </button>
 
-        <button
-          onClick={handleShare}
-          className="text-sm font-semibold text-blue-600 border border-blue-600 rounded-lg px-4 py-1.5 bg-white hover:bg-blue-50 transition-all shadow-sm"
-        >
-          Share
-        </button>
-      </div>
-
-      {/* AI Modal */}
-      {showAIModal && (
-        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-[100]">
-          <div className="bg-white p-6 rounded-2xl w-[450px] shadow-2xl">
-            <h3 className="text-lg font-bold mb-3 text-gray-800">Generate with AI</h3>
-            <textarea
-              autoFocus
-              value={aiPrompt}
-              onChange={e => setAiPrompt(e.target.value)}
-              className="w-full border-2 border-gray-100 p-3 rounded-xl focus:border-purple-500 outline-none transition h-32 text-sm"
-              placeholder="e.g. A system architecture with a load balancer, two servers and a database..."
-            />
-            <div className="flex justify-end gap-3 mt-4">
-              <button onClick={() => setShowAIModal(false)} className="px-4 py-2 text-sm text-gray-500 hover:bg-gray-100 rounded-lg">Cancel</button>
-              <button
-                disabled={aiLoading}
-                onClick={generateFromAI}
-                className="bg-purple-600 text-white px-6 py-2 rounded-lg text-sm font-semibold disabled:bg-purple-300 transition"
-              >
-                {aiLoading ? 'Thinking...' : 'Generate'}
-              </button>
-            </div>
-          </div>
+          <button
+            onClick={handleShare}
+            className="text-sm font-semibold text-slate-700 border border-slate-300 rounded-lg px-4 py-1.5 bg-white hover:bg-slate-50 transition-all shadow-sm"
+          >
+            Share
+          </button>
         </div>
-      )}
+      </div>
 
       {/* Share Popup */}
       {showShare && (
-        <div className="absolute bottom-20 left-1/2 -translate-x-1/2 bg-white border border-slate-200 rounded-lg shadow-xl p-4 w-72 z-50">
-          <div className="flex justify-between items-center mb-2 text-sm font-semibold text-blue-600">
-            <span>Share Link</span>
-            <button onClick={() => setShowShare(false)}>×</button>
-          </div>
-          <div className="flex gap-2">
-            <input readOnly value={typeof window !== 'undefined' ? window.location.href : ''} className="flex-1 text-xs px-2 py-1.5 rounded border bg-slate-50" />
-            <button onClick={handleCopyLink} className={`text-xs px-3 py-1.5 rounded font-medium text-white ${copied ? 'bg-green-500' : 'bg-blue-600'}`}>
-              {copied ? 'Copied' : 'Copy'}
-            </button>
+        <div className="fixed inset-0 bg-black/20 z-[60]" onClick={() => setShowShare(false)}>
+          <div 
+            className="absolute bottom-20 left-1/2 -translate-x-1/2 bg-white border border-slate-200 rounded-xl shadow-2xl p-6 w-[350px]"
+            onClick={e => e.stopPropagation()}
+          >
+            <div className="flex justify-between items-center mb-4">
+              <h3 className="font-bold text-slate-800">Share Project</h3>
+              <button onClick={() => setShowShare(false)} className="text-slate-400 hover:text-slate-600">✕</button>
+            </div>
+
+            {/* Section 1: Copy Link */}
+            <div className="mb-6">
+              <label className="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-2 block">Public Link</label>
+              <div className="flex gap-2">
+                <input 
+                  readOnly 
+                  value={typeof window !== 'undefined' ? window.location.href : ''} 
+                  className="flex-1 text-sm px-3 py-2 rounded-lg border border-slate-200 bg-slate-50 text-slate-600 outline-none" 
+                />
+                <button 
+                  onClick={handleCopyLink} 
+                  className={`text-sm px-4 py-2 rounded-lg font-medium transition-all ${copied ? 'bg-green-500 text-white' : 'bg-slate-900 text-white hover:bg-slate-800'}`}
+                >
+                  {copied ? 'Copied!' : 'Copy'}
+                </button>
+              </div>
+            </div>
+
+            <div className="w-full h-px bg-slate-100 my-4" />
+
+            {/* Section 2: Invite Collaborator */}
+            <div>
+              <label className="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-2 block">Invite Collaborator</label>
+              <div className="flex gap-2">
+                <input 
+                  value={inviteEmail}
+                  onChange={(e) => setInviteEmail(e.target.value)}
+                  placeholder="colleague@example.com"
+                  className="flex-1 text-sm px-3 py-2 rounded-lg border border-slate-200 outline-none focus:border-blue-500 transition-colors"
+                />
+                <button 
+                  onClick={handleInvite}
+                  disabled={inviteStatus === 'sending' || inviteStatus === 'sent'}
+                  className={`text-sm px-4 py-2 rounded-lg font-medium text-white transition-all
+                    ${inviteStatus === 'sent' ? 'bg-green-500' : inviteStatus === 'error' ? 'bg-red-500' : 'bg-blue-600 hover:bg-blue-700'}
+                    ${inviteStatus === 'sending' ? 'opacity-70' : ''}
+                  `}
+                >
+                  {inviteStatus === 'sending' ? '...' : inviteStatus === 'sent' ? 'Sent' : 'Invite'}
+                </button>
+              </div>
+              {inviteStatus === 'sent' && <p className="text-xs text-green-600 mt-2">Invitation sent successfully!</p>}
+              {inviteStatus === 'error' && <p className="text-xs text-red-600 mt-2">Failed to send invite.</p>}
+            </div>
           </div>
         </div>
       )}
@@ -518,7 +387,8 @@ User Request: ${aiPrompt}`
         ))}
       </div>
 
-      <RoomChat roomId={roomId} ws={wsRef.current} currentUserId={currentUserId} />
+      {/* Wait for roomId before rendering RoomChat to prevent errors */}
+      {roomId && <RoomChat roomId={roomId} ws={wsRef.current} currentUserId={currentUserId} />}
     </div>
   );
 }

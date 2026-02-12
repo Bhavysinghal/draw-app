@@ -438,7 +438,9 @@ app.post("/create-room", middleware, async (req, res) => {
         return;
     }
 
-    const slug = name.toLowerCase().replace(/ /g, '-') + '-' + Date.now();
+    // Generate a clean slug: "room-name-x92a"
+const randomString = Math.random().toString(36).substring(2, 6);
+const slug = name.toLowerCase().trim().replace(/ /g, '-') + '-' + randomString;
 
     try {
         const room = await prismaClient.room.create({

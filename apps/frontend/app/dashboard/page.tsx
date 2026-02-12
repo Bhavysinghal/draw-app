@@ -213,12 +213,13 @@ function DashboardContent() {
   };
 
   const joinRoom = async () => {
-    if (!roomSlug) return;
-    try {
-      const res = await axios.get(`${BACKEND_URL}/room/${roomSlug}`);
-      if (res.data.room?.id) router.push(`/canvas/${res.data.room.id}`);
-    } catch (e) { toast.error("Room not found", toastOptions); }
-  };
+  if (!roomSlug) return;
+  try {
+    const res = await axios.get(`${BACKEND_URL}/room/${roomSlug}`);
+    // Change .id to .slug here:
+    if (res.data.room?.slug) router.push(`/canvas/${res.data.room.slug}`);
+  } catch (e) { toast.error("Room not found", toastOptions); }
+};
 
   const deleteRoom = (roomId: string | number) => {
     if(!confirm("Are you sure you want to delete this room?")) return;
@@ -321,7 +322,7 @@ function DashboardContent() {
                       <CardHeader className="p-5 pb-2">
                          <div className="flex items-start justify-between">
                             <div className="space-y-1">
-                               <h3 className="font-bold text-lg leading-tight line-clamp-1 group-hover:text-primary transition-colors cursor-pointer" onClick={() => router.push(`/canvas/${room.id}`)}>
+                               <h3 className="font-bold text-lg leading-tight line-clamp-1 group-hover:text-primary transition-colors cursor-pointer" onClick={() => router.push(`/canvas/${room.slug}`)}>
                                  {room.slug}
                                </h3>
                                <div className="flex items-center gap-2 text-xs text-muted-foreground">
