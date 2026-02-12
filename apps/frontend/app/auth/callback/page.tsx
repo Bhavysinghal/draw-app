@@ -3,6 +3,7 @@
 import { useEffect, Suspense } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 
+// 1. Create a separate component for the logic that uses searchParams
 function AuthCallbackContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -12,7 +13,7 @@ function AuthCallbackContent() {
     
     if (token) {
       localStorage.setItem('token', token);
-      // Redirect to Dashboard or Home
+      // Redirect to Dashboard
       router.push('/dashboard'); 
     } else {
       router.push('/auth'); // Failed, go back to login
@@ -29,6 +30,7 @@ function AuthCallbackContent() {
   );
 }
 
+// 2. Wrap it in a Suspense boundary in the default export
 export default function AuthCallback() {
   return (
     <Suspense fallback={
