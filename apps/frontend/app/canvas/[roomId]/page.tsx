@@ -82,34 +82,40 @@ export default function CanvasPage() {
     }
   }, []);
 
-  // 2. Load Drawing History (Waits for roomId)
+// 2. LOAD SNAPSHOT LOG (Using roomSlug)
   useEffect(() => {
-    if (!roomId) return; 
-    
-    fetch(`${BACKEND_URL}/chats/${roomId}`)
+    if (!roomSlug) return; // 👈 Now waits for roomSlug, not roomId
+
+    fetch(`${BACKEND_URL}/chats/${roomSlug}`, { // 👈 Changed to roomSlug
+        headers: { "Authorization": `Bearer ${localStorage.getItem('token')}` }
+    })
       .then(res => res.json())
       .then(data => {
         const history = data.messages || [];
         const allElements: any[] = [];
+
         history.reverse().forEach((msg: any) => {
           try {
-            const parsed = JSON.parse(msg.message);
-            allElements.push(...parsed);
-          } catch {}
+            const parsed = JSON.parse(msg.message); 
+            if (Array.isArray(parsed)) {
+                allElements.push(...parsed);
+            }
+          } catch (e) {}
         });
 
         const syncInitial = () => {
           if (excalidrawAPIRef.current) {
-            excalidrawAPIRef.current.updateScene({ 
-              elements: mergeElements([], allElements) 
-            });
+            const currentScene = excalidrawAPIRef.current.getSceneElements();
+            const merged = mergeElements(currentScene, allElements);
+            excalidrawAPIRef.current.updateScene({ elements: merged });
           } else {
-            setTimeout(syncInitial, 500);
+            setTimeout(syncInitial, 200);
           }
         };
         syncInitial();
-      });
-  }, [roomId]);
+      })
+      .catch(e => console.error("Error loading history:", e));
+  }, [roomSlug]); // 👈 Changed dependency
 
   // 3. WebSocket Lifecycle (Waits for roomId)
   useEffect(() => {
@@ -197,26 +203,54 @@ export default function CanvasPage() {
     }));
   };
 
-  // 6. Functionalities (Save/Share)
-  const handleSaveToServer = async () => {
-    const token = localStorage.getItem('token');
-    const elements = excalidrawAPIRef.current?.getSceneElements();
-    if (!token || !elements || !roomId) return;
-    setSaveStatus('saving');
-    try {
-      const res = await fetch(`${BACKEND_URL}/chats/${roomId}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: `${token}` },
-        body: JSON.stringify({ message: JSON.stringify(elements) })
-      });
-      if (res.ok) {
-        setSaveStatus('saved');
-        setLastSaved(new Date()); 
-        setTimeout(() => setSaveStatus('idle'), 1500);
-      }
-    } catch (e) { setSaveStatus('idle'); }
-  };
+  // 3. SAVE SNAPSHOT (Using roomSlug)
+const handleSaveToServer = async () => {
+    console.log("1. Save button clicked!");
+    console.log("2. Current roomSlug is:", roomSlug);
+    console.log("3. Backend URL is configured as:", BACKEND_URL);
 
+    if (!roomSlug) {
+        console.error("❌ ERROR: roomSlug is missing! Check your browser URL.");
+        return;
+    }
+    
+    if (!excalidrawAPIRef.current) {
+        console.error("❌ ERROR: Excalidraw canvas is not ready!");
+        return;
+    }
+
+    setSaveStatus('saving');
+    const elements = excalidrawAPIRef.current.getSceneElements();
+    const targetUrl = `${BACKEND_URL}/chats/${roomSlug}`;
+    
+    console.log(`4. Attempting to send POST request to: ${targetUrl}`);
+
+    try {
+        const response = await fetch(targetUrl, { 
+            method: 'POST',
+            headers: { 
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${localStorage.getItem('token')}`
+            },
+            body: JSON.stringify({ message: JSON.stringify(elements) }) 
+        });
+        
+        console.log("5. Backend responded with status:", response.status);
+
+        if (!response.ok) {
+            const errorText = await response.text();
+            console.error(`❌ HTTP Error ${response.status}:`, errorText);
+            setSaveStatus('idle');
+            return;
+        }
+        
+        setSaveStatus('saved');
+        setTimeout(() => setSaveStatus('idle'), 2000);
+    } catch (e) {
+        console.error("❌ Fetch completely failed (Network error or server offline):", e);
+        setSaveStatus('idle');
+    }
+  };
   // Keyboard Shortcut
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -393,15 +427,18 @@ export default function CanvasPage() {
   );
 }
 
-// Helpers
-function mergeElements(existing: readonly any[], incoming: any[]): any[] {
-  const map = new Map<string, any>();
+// 4. Helper Function
+function mergeElements(existing: any[], incoming: any[]): any[] {
+  const map = new Map();
   existing.forEach(el => map.set(el.id, el));
   incoming.forEach(el => {
-    const prev = map.get(el.id);
-    if (!prev || el.version > prev.version) map.set(el.id, el);
+      const prev = map.get(el.id);
+      // If the incoming element is newer (higher version), overwrite
+      if (!prev || el.version > prev.version || (el.version === prev.version && el.versionNonce > prev.versionNonce)) {
+          map.set(el.id, el);
+      }
   });
-  return Array.from(map.values()).filter(el => !el.isDeleted);
+  return Array.from(map.values()).filter((el: any) => !el.isDeleted);
 }
 
 function getRandomColor(): string {

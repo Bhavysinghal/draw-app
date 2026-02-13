@@ -32,7 +32,8 @@ model Room {
   // The Collaborators (Guests) - Many-to-Many relationship
   collaborators User[] @relation("CollabRooms")
 
-  chats Chat[]
+  chats  Chat[]
+  shapes Shape[] // 👈 Add relation
 }
 
 model Chat {
@@ -43,4 +44,15 @@ model Chat {
 
   room Room @relation(fields: [roomId], references: [id])
   user User @relation(fields: [userId], references: [id])
+}
+
+// 2. Create this new Model
+model Shape {
+  id     String @id // Excalidraw uses string IDs (e.g., "element-1")
+  roomId Int
+  data   String // We will store the full JSON shape object as a string
+
+  room Room @relation(fields: [roomId], references: [id])
+
+  @@index([roomId])
 }
