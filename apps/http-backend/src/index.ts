@@ -21,7 +21,7 @@ app.use(cors({
     allowedHeaders: ["Content-Type", "Authorization"]
 }));
 
-const FRONTEND_URL = process.env.FRONTEND_URL || "http://localhost:3000";
+const FRONTEND_URL = process.env.FRONTEND_URL || "https://draw-app-frontend-nine.vercel.app/";
 
 /* -------------------------------------------------------------------------- */
 /* AUTH ROUTES                                                                */
