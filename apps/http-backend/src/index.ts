@@ -1,4 +1,4 @@
-import express from "express";
+import express, { Request, Response, NextFunction } from "express";
 import axios from "axios";
 import jwt from "jsonwebtoken";
 import bcrypt from "bcryptjs";
@@ -6,383 +6,313 @@ import cors from "cors";
 import nodemailer from "nodemailer";
 import { middleware } from "./auth.middleware";
 import { JWT_SECRET } from "@repo/backend-common/config";
-import { 
-    CreateUserSchema,
-    SigninSchema 
-} from "@repo/common/types";
+import { CreateUserSchema, SigninSchema } from "@repo/common/types";
 import { prismaClient } from "@repo/db/client";
+import { asyncHandler } from "./utils/asyncHandler";
 
 const app = express();
 
 app.use(express.json());
-app.use(cors({
-    origin: "*", // ⚠️ ALLOWS ALL origins (good for debugging)
+
+app.use(
+  cors({
+    origin: process.env.FRONTEND_URL || "http://localhost:3000",
     methods: ["GET", "POST", "PUT", "DELETE"],
-    allowedHeaders: ["Content-Type", "Authorization"]
-}));
+    allowedHeaders: ["Content-Type", "Authorization"],
+  })
+);
 
 const FRONTEND_URL = process.env.FRONTEND_URL || "https://draw-app-frontend-nine.vercel.app/";
 
-/* -------------------------------------------------------------------------- */
-/* AUTH ROUTES                                                                */
-/* -------------------------------------------------------------------------- */
+const mailer = nodemailer.createTransport({
+  service: "gmail",
+  auth: {
+    user: process.env.GMAIL_USER,
+    pass: process.env.GMAIL_PASS,
+  },
+});
 
-// 1. Google Auth Redirect
 app.get("/auth/google", (req, res) => {
-    const url = `https://accounts.google.com/o/oauth2/v2/auth?client_id=${process.env.GOOGLE_CLIENT_ID}&redirect_uri=${process.env.GOOGLE_REDIRECT_URI}&response_type=code&scope=profile email`;
-    res.redirect(url);
+  const url = `https://accounts.google.com/o/oauth2/v2/auth?client_id=${process.env.GOOGLE_CLIENT_ID}&redirect_uri=${process.env.GOOGLE_REDIRECT_URI}&response_type=code&scope=profile email`;
+  res.redirect(url);
 });
 
-// 2. Google Callback
-app.get("/auth/google/callback", async (req, res) => {
-    const { code } = req.query;
+app.get("/auth/google/callback", asyncHandler(async (req, res) => {
+  const { code } = req.query;
 
-    if (!code) {
-        res.status(400).send("No code provided");
-        return;
-    }
+  if (!code) {
+    res.status(400).send("No code provided");
+    return;
+  }
 
-    try {
-        const { data } = await axios.post("https://oauth2.googleapis.com/token", {
-            client_id: process.env.GOOGLE_CLIENT_ID,
-            client_secret: process.env.GOOGLE_CLIENT_SECRET,
-            code,
-            grant_type: "authorization_code",
-            redirect_uri: process.env.GOOGLE_REDIRECT_URI,
-        });
+  const { data } = await axios.post("https://oauth2.googleapis.com/token", {
+    client_id: process.env.GOOGLE_CLIENT_ID,
+    client_secret: process.env.GOOGLE_CLIENT_SECRET,
+    code,
+    grant_type: "authorization_code",
+    redirect_uri: process.env.GOOGLE_REDIRECT_URI,
+  });
 
-        const { access_token } = data;
+  const { access_token } = data;
 
-        const { data: googleUser } = await axios.get("https://www.googleapis.com/oauth2/v1/userinfo", {
-            headers: { Authorization: `Bearer ${access_token}` },
-        });
+  const { data: googleUser } = await axios.get(
+    "https://www.googleapis.com/oauth2/v1/userinfo",
+    { headers: { Authorization: `Bearer ${access_token}` } }
+  );
 
-        const { email, name, picture, id: googleId } = googleUser;
+  const { email, name, picture, id: googleId } = googleUser;
 
-        let user = await prismaClient.user.findFirst({
-            where: { email }
-        });
+  let user = await prismaClient.user.findFirst({ where: { email } });
 
-        if (!user) {
-            user = await prismaClient.user.create({
-                data: {
-                    email,
-                    name,
-                    photo: picture,
-                    googleId,
-                    password: "" 
-                }
-            });
-        } else {
-             if (!user.googleId) {
-                 user = await prismaClient.user.update({
-                     where: { id: user.id },
-                     data: { googleId, photo: picture || user.photo }
-                 });
-             }
-        }
-
-        const token = jwt.sign({ 
-            userId: user.id,
-            name: user.name 
-        }, JWT_SECRET);
-
-        res.redirect(`${FRONTEND_URL}/auth/callback?token=${token}`);
-
-    } catch (error) {
-        console.error("Google Auth Error:", error);
-        res.status(500).send("Authentication failed");
-    }
-});
-
-app.post("/signup", async (req, res) => {
-    const parsedData = CreateUserSchema.safeParse(req.body);
-    if (!parsedData.success) {
-        res.status(400).json({ message: "Incorrect inputs", errors: parsedData.error });
-        return;
-    }
-    try {
-        const hashedPassword = await bcrypt.hash(parsedData.data.password, 10);
-        const user = await prismaClient.user.create({
-            data: {
-                email: parsedData.data.username, 
-                password: hashedPassword,
-                name: parsedData.data.name
-            }
-        });
-        res.json({ userId: user.id });
-    } catch(e) {
-        res.status(409).json({ message: "User already exists with this email" });
-    }
-});
-
-app.post("/signin", async (req, res) => {
-    const parsedData = SigninSchema.safeParse(req.body);
-    if (!parsedData.success) {
-        res.status(400).json({ message: "Incorrect inputs" });
-        return;
-    }
-
-    const user = await prismaClient.user.findFirst({
-        where: { email: parsedData.data.username }
+  if (!user) {
+    user = await prismaClient.user.create({
+      data: { email, name, photo: picture, googleId, password: "" },
     });
+  } else if (!user.googleId) {
+    user = await prismaClient.user.update({
+      where: { id: user.id },
+      data: { googleId, photo: picture || user.photo },
+    });
+  }
 
-    if (!user) {
-        res.status(403).json({ message: "Invalid credentials" });
-        return;
+  const token = jwt.sign(
+    { userId: user.id, name: user.name },
+    JWT_SECRET,
+    { expiresIn: "7d" }
+  );
+
+  res.redirect(`${FRONTEND_URL}/auth/callback?token=${token}`);
+}));
+
+app.post("/signup", asyncHandler(async (req, res) => {
+  const parsedData = CreateUserSchema.safeParse(req.body);
+  if (!parsedData.success) {
+    res.status(400).json({ message: "Incorrect inputs", errors: parsedData.error });
+    return;
+  }
+
+  const hashedPassword = await bcrypt.hash(parsedData.data.password, 10);
+
+  try {
+    const user = await prismaClient.user.create({
+      data: {
+        email: parsedData.data.username,
+        password: hashedPassword,
+        name: parsedData.data.name,
+      },
+    });
+    res.json({ userId: user.id });
+  } catch (e: any) {
+    if (e?.code === "P2002") {
+      res.status(409).json({ message: "User already exists with this email" });
+    } else {
+      throw e;
     }
+  }
+}));
 
-    if (!user.password) {
-        res.status(403).json({ message: "Invalid credentials. Please login with Google." });
-        return;
-    }
+app.post("/signin", asyncHandler(async (req, res) => {
+  const parsedData = SigninSchema.safeParse(req.body);
+  if (!parsedData.success) {
+    res.status(400).json({ message: "Incorrect inputs" });
+    return;
+  }
 
-    const isPasswordValid = await bcrypt.compare(parsedData.data.password, user.password);
+  const user = await prismaClient.user.findFirst({
+    where: { email: parsedData.data.username },
+  });
 
-    if (!isPasswordValid) {
-        res.status(403).json({ message: "Invalid credentials" });
-        return;
-    }
+  if (!user || !user.password) {
+    res.status(403).json({ message: "Invalid credentials" });
+    return;
+  }
 
-    const token = jwt.sign({ 
-        userId: user.id,
-        name: user.name 
-    }, JWT_SECRET);
-    
-    res.json({ token });
+  const isPasswordValid = await bcrypt.compare(
+    parsedData.data.password,
+    user.password
+  );
+
+  if (!isPasswordValid) {
+    res.status(403).json({ message: "Invalid credentials" });
+    return;
+  }
+
+  const token = jwt.sign(
+    { userId: user.id, name: user.name },
+    JWT_SECRET,
+    { expiresIn: "7d" }
+  );
+
+  res.json({ token });
+}));
+
+app.post("/create-room", middleware, asyncHandler(async (req, res) => {
+  const { name } = req.body;
+  if (!name) {
+    res.status(400).json({ message: "Room name is required" });
+    return;
+  }
+
+  const randomString = Math.random().toString(36).substring(2, 6);
+  const slug = name.toLowerCase().trim().replace(/ /g, "-") + "-" + randomString;
+
+  const room = await prismaClient.room.create({
+    data: { slug, adminId: req.userId! },
+    select: { id: true, slug: true, createdAt: true },
+  });
+
+  res.json({ roomId: room.id });
+}));
+
+app.get("/room/:slug", asyncHandler(async (req, res) => {
+  const param = req.params.slug as string;
+  const isNumeric = !isNaN(Number(param));
+
+  const room = await prismaClient.room.findFirst({
+    where: isNumeric ? { id: Number(param) } : { slug: param },
+    select: { id: true, slug: true, createdAt: true, adminId: true },
+  });
+
+  if (!room) {
+    res.status(404).json({ message: "Room not found" });
+    return;
+  }
+
+  res.json({ room });
+}));
+
+app.get("/my-rooms", middleware, asyncHandler(async (req, res) => {
+  const rooms = await prismaClient.room.findMany({
+    where: {
+      OR: [
+        { adminId: req.userId },
+        { collaborators: { some: { id: req.userId } } },
+      ],
+    },
+    select: { id: true, slug: true, createdAt: true },
+    orderBy: { createdAt: "desc" },
+  });
+
+  res.json({ rooms });
+}));
+
+app.post("/rooms/:roomId/add-collaborator", middleware, asyncHandler(async (req, res) => {
+  const roomId = parseInt(req.params.roomId as string);
+  const { email } = req.body;
+
+  if (!email) {
+    res.status(400).json({ message: "Email is required" });
+    return;
+  }
+
+  const room = await prismaClient.room.findUnique({ where: { id: roomId } });
+
+  if (!room) {
+    res.status(404).json({ message: "Room not found" });
+    return;
+  }
+
+  if (room.adminId !== req.userId) {
+    res.status(403).json({ message: "Only the room owner can add collaborators" });
+    return;
+  }
+
+  const userToAdd = await prismaClient.user.findFirst({ where: { email } });
+
+  if (!userToAdd) {
+    await mailer.sendMail({
+      from: process.env.GMAIL_USER,
+      to: email,
+      subject: "Invitation to join DrawSync",
+      text: `You have been invited to collaborate! Sign up here: ${FRONTEND_URL}/signup`,
+    });
+    res.status(404).json({ message: "User not found, invitation sent!" });
+    return;
+  }
+
+  await prismaClient.room.update({
+    where: { id: roomId },
+    data: { collaborators: { connect: { id: userToAdd.id } } },
+  });
+
+  res.json({ message: "Collaborator added successfully!" });
+}));
+
+app.get("/me", middleware, asyncHandler(async (req, res) => {
+  const user = await prismaClient.user.findFirst({
+    where: { id: req.userId },
+    select: { name: true, email: true, photo: true },
+  });
+
+  if (!user) {
+    res.status(404).json({ message: "User not found" });
+    return;
+  }
+
+  res.json({ user });
+}));
+
+app.put("/me", middleware, asyncHandler(async (req, res) => {
+  const { name, photo } = req.body;
+
+  const updatedUser = await prismaClient.user.update({
+    where: { id: req.userId },
+    data: { name, photo },
+    select: { name: true, email: true, photo: true },
+  });
+
+  res.json({ message: "Profile updated", user: updatedUser });
+}));
+
+app.get("/chats/:slug", middleware, asyncHandler(async (req, res) => {
+  const param = req.params.slug as string;
+  const isNumeric = !isNaN(Number(param));
+  const page = Number(req.query.page) || 1;
+  const limit = 50;
+
+ const room = await prismaClient.room.findFirst({
+    where: isNumeric ? { id: Number(param) } : { slug: param as string },
+    include: { shapes: true },
 });
 
-/* -------------------------------------------------------------------------- */
-/* ROOM ROUTES                                                                */
-/* -------------------------------------------------------------------------- */
+  if (!room) {
+    res.status(404).json({ messages: [] });
+    return;
+  }
 
-app.post("/create-room", middleware, async (req, res) => {
-    const { name } = req.body; 
-    if (!name) {
-        res.status(400).json({ message: "Room name is required" });
-        return;
-    }
+  const messages = await prismaClient.chat.findMany({
+    where: { roomId: room.id },
+    orderBy: { id: "desc" },
+    skip: (page - 1) * limit,
+    take: limit,
+  });
 
-    const randomString = Math.random().toString(36).substring(2, 6);
-    const slug = name.toLowerCase().trim().replace(/ /g, '-') + '-' + randomString;
+  res.json({ messages });
+}));
 
-    try {
-        const room = await prismaClient.room.create({
-            data: {
-                slug: slug,
-                adminId: req.userId!
-            }
-        });
-        res.json({ roomId: room.id });
-    } catch (e) {
-        res.status(500).json({ message: "Could not create room" });
-    }
+app.get("/rooms/:slug/shapes", middleware, asyncHandler(async (req, res) => {
+  const param = req.params.slug as string;
+  const isNumeric = !isNaN(Number(param));
+
+  const roomWithShapes = await prismaClient.room.findFirst({
+    where: isNumeric ? { id: Number(param) } : { slug: param as string },
+    include: { shapes: true },
 });
 
-app.get("/room/:slug", async (req, res) => {
-    const param = req.params.slug;
-    const isNumeric = !isNaN(Number(param)); // Checks if the param is a number (like "4")
+if (!roomWithShapes) {
+    res.status(404).json({ shapes: [] });
+    return;
+}
 
-    try {
-        const room = await prismaClient.room.findFirst({
-            // If number, search by ID. If text, search by Slug.
-            where: isNumeric ? { id: Number(param) } : { slug: param }
-        });
-        if (!room) {
-             res.status(404).json({ message: "Room not found" });
-             return;
-        }
-        res.json({ room });
-    } catch(e) {
-        res.status(500).json({ message: "Something went wrong" });
-    }
-});
+const shapes = roomWithShapes.shapes.map((s: any) => JSON.parse(s.data));
+  res.json({ shapes });
+}));
 
-app.get("/my-rooms", middleware, async (req, res) => {
-    const userId = req.userId;
-    try {
-        const rooms = await prismaClient.room.findMany({
-            where: {
-                OR: [
-                    { adminId: userId }, 
-                    { collaborators: { some: { id: userId } } } 
-                ]
-            },
-            orderBy: { createdAt: 'desc' }
-        });
-        res.json({ rooms });
-    } catch (e) {
-        res.status(500).json({ message: "Something went wrong" });
-    }
-});
-
-/* -------------------------------------------------------------------------- */
-/* COLLABORATION ROUTES                                                       */
-/* -------------------------------------------------------------------------- */
-
-app.post('/rooms/:roomId/add-collaborator', middleware, async (req, res) => {
-    const roomId = req.params.roomId as string;
-    const { email } = req.body; 
-
-    if (!email) return res.status(400).json({ message: "Email is required" });
-
-    try {
-        const userToAdd = await prismaClient.user.findFirst({
-            where: { email }
-        });
-
-        if (!userToAdd) {
-            try {
-                const transporter = nodemailer.createTransport({
-                    service: 'gmail',
-                    auth: {
-                        user: process.env.GMAIL_USER,
-                        pass: process.env.GMAIL_PASS,
-                    },
-                });
-
-                await transporter.sendMail({
-                    from: process.env.GMAIL_USER,
-                    to: email,
-                    subject: `Invitation to join DrawSync`,
-                    text: `You have been invited to collaborate! Please sign up here: ${FRONTEND_URL}/signup`,
-                });
-
-                return res.status(404).json({ message: "User not found, invitation sent!" });
-            } catch (mailErr) {
-                console.error("Mail error:", mailErr);
-                return res.status(500).json({ message: "User not found and failed to send email." });
-            }
-        }
-
-        const roomIdNum = parseInt(roomId); 
-        
-        await prismaClient.room.update({
-            where: { id: roomIdNum },
-            data: {
-                collaborators: {
-                    connect: { id: userToAdd.id }
-                }
-            }
-        });
-
-        res.json({ message: "Collaborator added successfully!" });
-    } catch (e) {
-        console.error(e);
-        res.status(500).json({ message: "Failed to add collaborator" });
-    }
-});
-
-/* -------------------------------------------------------------------------- */
-/* USER PROFILE ROUTES                                                        */
-/* -------------------------------------------------------------------------- */
-
-app.get("/me", middleware, async (req, res) => {
-    const userId = req.userId;
-    try {
-        const user = await prismaClient.user.findFirst({
-            where: { id: userId }
-        });
-        
-        if (!user) {
-             res.status(404).json({ message: "User not found" });
-             return;
-        }
-
-        res.json({
-            user: {
-                name: user.name,
-                email: user.email,
-                photo: user.photo
-            }
-        });
-    } catch (e) {
-        res.status(500).json({ message: "Something went wrong" });
-    }
-});
-
-app.put("/me", middleware, async (req, res) => {
-    const userId = req.userId;
-    const { name, photo } = req.body;
-
-    try {
-        const updatedUser = await prismaClient.user.update({
-            where: { id: userId },
-            data: { name, photo }
-        });
-
-        res.json({ message: "Profile updated", user: updatedUser });
-    } catch (e) {
-        res.status(500).json({ message: "Error updating profile" });
-    }
-});
-
-/* -------------------------------------------------------------------------- */
-/* CHAT / SNAPSHOT ROUTES (Using Slug for Drawing Persistence)                */
-/* -------------------------------------------------------------------------- */
-
-// GET History by Slug
-app.get("/chats/:slug", middleware, async (req, res) => {
-    try {
-        const param = req.params.slug as string; 
-        const isNumeric = !isNaN(Number(param));
-        
-        const room = await prismaClient.room.findFirst({ 
-            where: isNumeric ? { id: Number(param) } : { slug: param } 
-        });
-        
-        if (!room) {
-             res.status(404).json({ messages: [] });
-             return;
-        }
-
-        const messages = await prismaClient.chat.findMany({
-            where: { roomId: room.id },
-            orderBy: { id: "desc" },
-            take: 1000
-        });
-        res.json({ messages });
-    } catch(e) {
-        res.json({ messages: [] });
-    }
-});
-
-// POST Snapshot by Slug
-app.post("/chats/:slug", middleware, async (req, res) => {
-    try {
-        const param = req.params.slug as string; 
-        const isNumeric = !isNaN(Number(param));
-        const { message } = req.body; 
-
-        if (!message) {
-             res.status(400).json({ message: "Content required" });
-             return;
-        }
-
-        const room = await prismaClient.room.findFirst({ 
-            where: isNumeric ? { id: Number(param) } : { slug: param } 
-        });
-        
-        if (!room) {
-             res.status(404).json({ message: "Room not found" });
-             return;
-        }
-
-        await prismaClient.chat.create({
-            data: {
-                roomId: room.id,
-                message, 
-                userId: req.userId!
-            }
-        });
-
-        res.json({ message: "Snapshot saved" });
-    } catch (e) {
-        console.error("Save snapshot error:", e);
-        res.status(500).json({ message: "Error saving snapshot" });
-    }
+app.use((err: Error, req: Request, res: Response, _next: NextFunction) => {
+  console.error("[ERROR]", err.message);
+  res.status(500).json({ message: "Internal server error" });
 });
 
 app.listen(3001, () => {
-    console.log("Server running on port 3001");
+  console.log("Server running on port 3001");
 });

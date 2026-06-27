@@ -7,134 +7,106 @@ const wss = new WebSocketServer({ port: 8080 });
 
 interface User {
   ws: WebSocket;
-  rooms: number[];
   userId: string;
 }
 
-const users: User[] = [];
+const usersBySocket = new Map<WebSocket, User>();
+const roomMembers = new Map<number, Set<WebSocket>>();
 
-/* ------------------ AUTH ------------------ */
 function checkUser(token: string): string | null {
   try {
     const decoded = jwt.verify(token, JWT_SECRET) as JwtPayload;
-
-    if (!decoded || !decoded.userId) {
-      return null;
-    }
-
-    return decoded.userId as string;
+    return decoded?.userId ?? null;
   } catch {
     return null;
   }
 }
 
-/* ------------------ CONNECTION ------------------ */
+function broadcastToRoom(roomId: number, senderWs: WebSocket, payload: object) {
+  const members = roomMembers.get(roomId);
+  if (!members) return;
+
+  const message = JSON.stringify(payload);
+  for (const socket of members) {
+    if (socket !== senderWs && socket.readyState === WebSocket.OPEN) {
+      socket.send(message);
+    }
+  }
+}
+
 wss.on("connection", (ws, request) => {
   const url = request.url;
   if (!url) return ws.close();
 
-  const queryParams = new URLSearchParams(url.split("?")[1]);
-  const token = queryParams.get("token");
-
+  const token = new URLSearchParams(url.split("?")[1]).get("token");
   if (!token) return ws.close();
 
   const userId = checkUser(token);
   if (!userId) return ws.close();
 
-  const user: User = {
-    ws,
-    rooms: [],
-    userId,
-  };
+  usersBySocket.set(ws, { ws, userId });
 
-  users.push(user);
-
-  /* ------------------ MESSAGE ------------------ */
   ws.on("message", async (data) => {
     let parsedData: any;
-
     try {
-      parsedData =
-        typeof data === "string"
-          ? JSON.parse(data)
-          : JSON.parse(data.toString());
+      parsedData = JSON.parse(
+        typeof data === "string" ? data : data.toString()
+      );
     } catch {
       return;
     }
 
     if (!parsedData?.type) return;
 
-    /* -------- JOIN ROOM -------- */
     if (parsedData.type === "join_room") {
       const roomId = Number(parsedData.roomId);
-      if (!isNaN(roomId) && !user.rooms.includes(roomId)) {
-        user.rooms.push(roomId);
-      }
+      if (isNaN(roomId)) return;
+      if (!roomMembers.has(roomId)) roomMembers.set(roomId, new Set());
+      roomMembers.get(roomId)!.add(ws);
       return;
     }
 
-    /* -------- LEAVE ROOM -------- */
     if (parsedData.type === "leave_room") {
       const roomId = Number(parsedData.roomId);
-      user.rooms = user.rooms.filter((r) => r !== roomId);
+      roomMembers.get(roomId)?.delete(ws);
       return;
     }
 
-//     /* -------- DRAWING -------- */
-//     if (parsedData.type === "drawing") {
-//       const roomId = Number(parsedData.roomId);
-//       const elements = parsedData.elements; // Array of shape objects
-//       const clientId = parsedData.clientId;
-
-//       // 1. Broadcast to others (Real-time sync)
-//       users.forEach((u) => {
-//         if (u.ws !== ws && u.rooms.includes(roomId) && u.ws.readyState === WebSocket.OPEN) {
-//           u.ws.send(JSON.stringify({
-//             type: "drawing",
-//             roomId,
-//             elements,
-//             clientId
-//           }));
-//         }
-//       });
-
-//       // 2. SAVE TO DB (Persistence Logic)
-//       // This ensures when you refresh, the drawings are saved in the DB to be fetched via HTTP
-//       // ... after broadcasting to users ...
-// if (Array.isArray(elements)) {
-//     elements.forEach(async (element: any) => {
-//         await prismaClient.shape.upsert({
-//             where:  { id: element.id },
-//             update: { data: JSON.stringify(element) },
-//             create: { id: element.id, roomId, data: JSON.stringify(element) }
-//         });
-//     });
-// }
-//     }
-
-    /* -------- CURSOR -------- */
-    if (parsedData.type === "cursor") {
+    if (parsedData.type === "drawing") {
       const roomId = Number(parsedData.roomId);
-      const pointer = parsedData.pointer;
-      const clientId = parsedData.clientId;
-      const color = parsedData.color;
-      const username = parsedData.username || "Anonymous"; 
+      const elements: any[] = parsedData.elements ?? [];
 
-      users.forEach((u) => {
-        if (u.ws !== ws && u.rooms.includes(roomId) && u.ws.readyState === WebSocket.OPEN) {
-          u.ws.send(JSON.stringify({
-            type: "cursor",
-            roomId,
-            pointer,
-            clientId,
-            color,
-            username 
-          }));
+      broadcastToRoom(roomId, ws, { type: "drawing", roomId, elements });
+
+      setImmediate(async () => {
+        for (const el of elements) {
+          try {
+            await prismaClient.shape.upsert({
+              where: { id: el.id },
+              update: { data: JSON.stringify(el) },
+              create: { id: el.id, roomId, data: JSON.stringify(el) },
+            });
+          } catch (e) {
+            console.error("Shape save error:", e);
+          }
         }
       });
-    }   
-    
-    /* -------- CHAT -------- */
+      return;
+    }
+
+    if (parsedData.type === "cursor") {
+      const roomId = Number(parsedData.roomId);
+      broadcastToRoom(roomId, ws, {
+        type: "cursor",
+        roomId,
+        pointer: parsedData.pointer,
+        clientId: parsedData.clientId,
+        color: parsedData.color,
+        username: parsedData.username || "Anonymous",
+      });
+      return;
+    }
+
     if (parsedData.type === "chat") {
       const roomId = Number(parsedData.roomId);
       const content = parsedData.content;
@@ -143,38 +115,28 @@ wss.on("connection", (ws, request) => {
 
       try {
         const chatEntry = await prismaClient.chat.create({
-          data: {
-            roomId,
-            message: content,
-            userId
-          },
-          include: {
-            user: true
-          }
+          data: { roomId, message: content, userId },
+          include: { user: { select: { id: true, name: true, photo: true } } },
         });
 
-        users.forEach((u) => {
-          if (
-            u.rooms.includes(roomId) &&
-            u.ws.readyState === WebSocket.OPEN
-          ) {
-            u.ws.send(
-              JSON.stringify({
-                type: "chat",
-                roomId,
-                message: { 
-                  id: chatEntry.id,
-                  content: chatEntry.message,
-                  userId: {
-                    id: chatEntry.user.id,
-                    name: chatEntry.user.name,
-                    photo: chatEntry.user.photo
-                  }
-                }
-              })
-            );
-          }
+        const members = roomMembers.get(roomId);
+        if (!members) return;
+
+        const message = JSON.stringify({
+          type: "chat",
+          roomId,
+          message: {
+            id: chatEntry.id,
+            content: chatEntry.message,
+            userId: chatEntry.user,
+          },
         });
+
+        for (const socket of members) {
+          if (socket.readyState === WebSocket.OPEN) {
+            socket.send(message);
+          }
+        }
       } catch (e) {
         console.error("Chat error:", e);
       }
@@ -182,9 +144,11 @@ wss.on("connection", (ws, request) => {
   });
 
   ws.on("close", () => {
-    const index = users.findIndex((u) => u.ws === ws);
-    if (index !== -1) {
-      users.splice(index, 1);
+    usersBySocket.delete(ws);
+    for (const members of roomMembers.values()) {
+      members.delete(ws);
     }
   });
 });
+
+console.log("WebSocket server running on port 8080");

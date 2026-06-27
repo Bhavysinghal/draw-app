@@ -13,11 +13,11 @@ model User {
   password String?
   name     String?
   photo    String?
-  googleId String? @unique // 👈 Add this new field
+  googleId String? @unique
 
   chats       Chat[]
-  rooms       Room[] @relation("AdminRooms") // Rooms created/owned by this user
-  collabRooms Room[] @relation("CollabRooms") // Rooms where this user is a guest
+  rooms       Room[] @relation("AdminRooms")
+  collabRooms Room[] @relation("CollabRooms")
 }
 
 model Room {
@@ -25,15 +25,15 @@ model Room {
   slug      String   @unique
   createdAt DateTime @default(now())
 
-  // The Admin (Owner) of the room
   adminId String
   admin   User   @relation("AdminRooms", fields: [adminId], references: [id])
 
-  // The Collaborators (Guests) - Many-to-Many relationship
   collaborators User[] @relation("CollabRooms")
 
   chats  Chat[]
-  shapes Shape[] // 👈 Add relation
+  shapes Shape[]
+
+  @@index([adminId])
 }
 
 model Chat {
@@ -44,13 +44,14 @@ model Chat {
 
   room Room @relation(fields: [roomId], references: [id])
   user User @relation(fields: [userId], references: [id])
+
+  @@index([roomId])
 }
 
-// 2. Create this new Model
 model Shape {
-  id     String @id // Excalidraw uses string IDs (e.g., "element-1")
+  id     String @id
   roomId Int
-  data   String // We will store the full JSON shape object as a string
+  data   String
 
   room Room @relation(fields: [roomId], references: [id])
 
