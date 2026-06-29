@@ -6,7 +6,11 @@ import cors from "cors";
 import nodemailer from "nodemailer";
 import { middleware } from "./auth.middleware";
 import { JWT_SECRET } from "@repo/backend-common/config";
-import { CreateUserSchema, SigninSchema } from "@repo/common/types";
+import {
+  CreateRoomSchema,
+  CreateUserSchema,
+  SigninSchema,
+} from "@repo/common/types";
 import { prismaClient } from "@repo/db/client";
 import { asyncHandler } from "./utils/asyncHandler";
 
@@ -58,6 +62,16 @@ function generateSlug(): string {
   return `${pick(ADJECTIVES)}-${pick(NOUNS)}-${pick(NOUNS)}`;
 }
 // -------------------------------------
+
+function roomAccessFilter(userId: string) {
+  return {
+    OR: [
+      { visibility: "PUBLIC" as const },
+      { adminId: userId },
+      { collaborators: { some: { id: userId } } },
+    ],
+  };
+}
 
 app.get("/auth/google", (req, res) => {
   const url = `https://accounts.google.com/o/oauth2/v2/auth?client_id=${process.env.GOOGLE_CLIENT_ID}&redirect_uri=${process.env.GOOGLE_REDIRECT_URI}&response_type=code&scope=profile email`;
@@ -174,6 +188,12 @@ app.post("/signin", asyncHandler(async (req, res) => {
 }));
 
 app.post("/create-room", middleware, asyncHandler(async (req, res) => {
+  const parsedData = CreateRoomSchema.safeParse(req.body);
+  if (!parsedData.success) {
+    res.status(400).json({ message: "Invalid room visibility" });
+    return;
+  }
+
   // Generate a unique 3-word slug, retry if collision
   let slug = generateSlug();
   let attempts = 0;
@@ -185,20 +205,39 @@ app.post("/create-room", middleware, asyncHandler(async (req, res) => {
   }
 
   const room = await prismaClient.room.create({
-    data: { slug, adminId: req.userId! },
-    select: { id: true, slug: true, createdAt: true },
+    data: {
+      slug,
+      adminId: req.userId!,
+      visibility: parsedData.data.visibility,
+    },
+    select: { id: true, slug: true, visibility: true, createdAt: true },
   });
 
-  res.json({ roomId: room.id, slug: room.slug });
+  res.json({
+    roomId: room.id,
+    slug: room.slug,
+    visibility: room.visibility,
+  });
 }));
 
-app.get("/room/:slug", asyncHandler(async (req, res) => {
+app.get("/room/:slug", middleware, asyncHandler(async (req, res) => {
   const param = req.params.slug as string;
   const isNumeric = !isNaN(Number(param));
 
   const room = await prismaClient.room.findFirst({
-    where: isNumeric ? { id: Number(param) } : { slug: param },
-    select: { id: true, slug: true, createdAt: true, adminId: true },
+    where: {
+      AND: [
+        isNumeric ? { id: Number(param) } : { slug: param },
+        roomAccessFilter(req.userId!),
+      ],
+    },
+    select: {
+      id: true,
+      slug: true,
+      visibility: true,
+      createdAt: true,
+      adminId: true,
+    },
   });
 
   if (!room) {
@@ -220,6 +259,8 @@ app.get("/my-rooms", middleware, asyncHandler(async (req, res) => {
     select: {
       id: true,
       slug: true,
+      visibility: true,
+      adminId: true,
       createdAt: true,
       collaborators: {
         select: { id: true, name: true, photo: true },
@@ -252,6 +293,11 @@ app.post("/rooms/:roomId/add-collaborator", middleware, asyncHandler(async (req,
     return;
   }
 
+  if (room.visibility === "PUBLIC") {
+    res.status(400).json({ message: "Public rooms do not require invitations" });
+    return;
+  }
+
   const userToAdd = await prismaClient.user.findFirst({ where: { email } });
 
   if (!userToAdd) {
@@ -276,7 +322,7 @@ app.post("/rooms/:roomId/add-collaborator", middleware, asyncHandler(async (req,
 app.get("/me", middleware, asyncHandler(async (req, res) => {
   const user = await prismaClient.user.findFirst({
     where: { id: req.userId },
-    select: { name: true, email: true, photo: true },
+    select: { id: true, name: true, email: true, photo: true },
   });
 
   if (!user) {
@@ -306,8 +352,13 @@ app.get("/chats/:slug", middleware, asyncHandler(async (req, res) => {
   const limit = 50;
 
   const room = await prismaClient.room.findFirst({
-    where: isNumeric ? { id: Number(param) } : { slug: param as string },
-    include: { shapes: true },
+    where: {
+      AND: [
+        isNumeric ? { id: Number(param) } : { slug: param },
+        roomAccessFilter(req.userId!),
+      ],
+    },
+    select: { id: true },
   });
 
   if (!room) {
@@ -330,7 +381,12 @@ app.get("/rooms/:slug/shapes", middleware, asyncHandler(async (req, res) => {
   const isNumeric = !isNaN(Number(param));
 
   const roomWithShapes = await prismaClient.room.findFirst({
-    where: isNumeric ? { id: Number(param) } : { slug: param as string },
+    where: {
+      AND: [
+        isNumeric ? { id: Number(param) } : { slug: param },
+        roomAccessFilter(req.userId!),
+      ],
+    },
     include: { shapes: true },
   });
 
@@ -341,6 +397,52 @@ app.get("/rooms/:slug/shapes", middleware, asyncHandler(async (req, res) => {
 
   const shapes = roomWithShapes.shapes.map((s: any) => JSON.parse(s.data));
   res.json({ shapes });
+}));
+
+app.post("/rooms/:roomId/save", middleware, asyncHandler(async (req, res) => {
+  const roomId = parseInt(req.params.roomId as string);
+  const { elements } = req.body;
+
+  if (Number.isNaN(roomId)) {
+    res.status(400).json({ message: "Invalid room ID" });
+    return;
+  }
+
+  if (!elements || !Array.isArray(elements)) {
+    res.status(400).json({ message: "Elements required" });
+    return;
+  }
+
+  const room = await prismaClient.room.findFirst({
+    where: {
+      id: roomId,
+      ...roomAccessFilter(req.userId!),
+    },
+    select: { id: true },
+  });
+
+  if (!room) {
+    res.status(404).json({ message: "Room not found" });
+    return;
+  }
+
+  const currentShapes = elements
+    .filter((el: any) => el?.id && !el.isDeleted)
+    .map((el: any) => ({
+      id: el.id,
+      roomId,
+      data: JSON.stringify(el),
+    }));
+
+  await prismaClient.$transaction(async (tx) => {
+    await tx.shape.deleteMany({ where: { roomId } });
+
+    if (currentShapes.length > 0) {
+      await tx.shape.createMany({ data: currentShapes });
+    }
+  });
+
+  res.json({ message: "Saved", shapeCount: currentShapes.length });
 }));
 
 app.use((err: Error, req: Request, res: Response, _next: NextFunction) => {

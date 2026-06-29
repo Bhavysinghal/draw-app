@@ -4,7 +4,7 @@ import dynamic from 'next/dynamic';
 import { useEffect, useRef, useState } from 'react';
 import '@excalidraw/excalidraw/index.css';
 import { RoomChat } from '@/components/RoomChat';
-import { useParams } from 'next/navigation';
+import { useParams, useRouter } from 'next/navigation';
 import { BACKEND_URL, WSS_URL } from '../../../config';
 
 const Excalidraw = dynamic(
@@ -22,6 +22,7 @@ interface CursorPosition {
 
 export default function CanvasPage() {
   const params = useParams();
+  const router = useRouter();
   const roomSlug = params.roomId as string;
 
   const [roomId, setRoomId] = useState<number | null>(null);
@@ -35,27 +36,46 @@ export default function CanvasPage() {
   const sendElementsTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const [remoteCursors, setRemoteCursors] = useState<Record<string, CursorPosition>>({});
-  const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'saved'>('idle');
+  const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
   const [showShare, setShowShare] = useState(false);
   const [copied, setCopied] = useState(false);
   const [currentUserId, setCurrentUserId] = useState<string | null>(null);
   const [inviteEmail, setInviteEmail] = useState('');
   const [inviteStatus, setInviteStatus] = useState<'idle' | 'sending' | 'sent' | 'error'>('idle');
   const [lastSaved, setLastSaved] = useState<Date | null>(null);
+  const [roomVisibility, setRoomVisibility] = useState<'PUBLIC' | 'PRIVATE'>('PRIVATE');
+  const [roomAdminId, setRoomAdminId] = useState<string | null>(null);
 
   // 0. Resolve Slug to Numeric ID
   useEffect(() => {
     if (!roomSlug) return;
 
-    fetch(`${BACKEND_URL}/room/${roomSlug}`)
-      .then(res => res.json())
+    const token = localStorage.getItem('token');
+    if (!token) {
+      router.push('/auth');
+      return;
+    }
+
+    fetch(`${BACKEND_URL}/room/${roomSlug}`, {
+      headers: { Authorization: `Bearer ${token}` },
+    })
+      .then(res => {
+        if (res.status === 401 || res.status === 403 || res.status === 404) {
+          router.push('/dashboard');
+          throw new Error("Room is unavailable");
+        }
+        if (!res.ok) throw new Error(`Room lookup failed: ${res.status}`);
+        return res.json();
+      })
       .then(data => {
         if (data.room?.id) {
           setRoomId(data.room.id);
+          setRoomVisibility(data.room.visibility);
+          setRoomAdminId(data.room.adminId);
         }
       })
-      .catch(e => console.error("Failed to resolve room slug"));
-  }, [roomSlug]);
+      .catch(e => console.error("Failed to resolve room slug", e));
+  }, [roomSlug, router]);
 
   // 1. Initialize User Data from JWT
   useEffect(() => {
@@ -73,7 +93,7 @@ export default function CanvasPage() {
     }
   }, []);
 
-  // 2. Load shapes from the new shapes endpoint
+  // 2. Load shapes from backend
   useEffect(() => {
     if (!roomSlug) return;
 
@@ -82,7 +102,9 @@ export default function CanvasPage() {
     })
       .then(res => res.json())
       .then(data => {
-        const shapes = data.shapes || [];
+        // Include ALL shapes (even deleted) so Excalidraw can reconcile properly
+        const shapes = (data.shapes || []);
+        if (shapes.length === 0) return;
 
         const syncInitial = () => {
           if (excalidrawAPIRef.current) {
@@ -102,9 +124,10 @@ export default function CanvasPage() {
     if (!token || !roomId) return;
 
     const connect = () => {
-      if (wsRef.current && (wsRef.current.readyState === WebSocket.CONNECTING || wsRef.current.readyState === WebSocket.OPEN)) {
-        return;
-      }
+      if (wsRef.current && (
+        wsRef.current.readyState === WebSocket.CONNECTING ||
+        wsRef.current.readyState === WebSocket.OPEN
+      )) return;
 
       const ws = new WebSocket(`${WSS_URL}?token=${token}`);
       wsRef.current = ws;
@@ -169,7 +192,6 @@ export default function CanvasPage() {
 
   const handlePointerUpdate = (payload: any) => {
     if (!roomId || !wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
-
     wsRef.current.send(JSON.stringify({
       type: 'cursor',
       clientId: clientId.current,
@@ -180,14 +202,37 @@ export default function CanvasPage() {
     }));
   };
 
-  // 5. Save button — shapes auto-save via WebSocket on every draw
+  // 5. Save button — replace stored shapes with the current visible canvas
   const handleSaveToServer = async () => {
+    if (!roomId || !excalidrawAPIRef.current) return;
     setSaveStatus('saving');
-    setTimeout(() => {
+
+    try {
+      // getSceneElements returns the current non-deleted canvas elements
+      const elements = excalidrawAPIRef.current.getSceneElements();
+
+      const token = localStorage.getItem('token');
+      const response = await fetch(`${BACKEND_URL}/rooms/${roomId}/save`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ elements }),
+      });
+
+      if (!response.ok) {
+        throw new Error(`Save failed with status ${response.status}`);
+      }
+
       setSaveStatus('saved');
       setLastSaved(new Date());
       setTimeout(() => setSaveStatus('idle'), 2000);
-    }, 500);
+    } catch (e) {
+      console.error('Save failed:', e);
+      setSaveStatus('error');
+      setTimeout(() => setSaveStatus('idle'), 3000);
+    }
   };
 
   // Keyboard Shortcut
@@ -202,22 +247,16 @@ export default function CanvasPage() {
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [roomId]);
 
-  // Handle Collaborator Invite
   const handleInvite = async () => {
     if (!inviteEmail || !roomId) return;
     setInviteStatus('sending');
     const token = localStorage.getItem('token');
-
     try {
       const res = await fetch(`${BACKEND_URL}/rooms/${roomId}/add-collaborator`, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${token}`
-        },
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
         body: JSON.stringify({ email: inviteEmail })
       });
-
       if (res.ok) {
         setInviteStatus('sent');
         setTimeout(() => setInviteStatus('idle'), 3000);
@@ -264,13 +303,7 @@ export default function CanvasPage() {
               ${saveStatus === 'saving' ? 'opacity-60 cursor-not-allowed' : 'hover:opacity-90'}
             `}
           >
-            {saveStatus === 'saving' ? (
-              <>Saving...</>
-            ) : saveStatus === 'saved' ? (
-              <>Saved ✓</>
-            ) : (
-              <>Save <span className="text-[10px] opacity-60 ml-1">⌘S</span></>
-            )}
+            {saveStatus === 'saving' ? <>Saving...</> : saveStatus === 'saved' ? <>Saved ✓</> : saveStatus === 'error' ? <>Save failed</> : <>Save <span className="text-[10px] opacity-60 ml-1">⌘S</span></>}
           </button>
 
           <button
@@ -294,7 +327,7 @@ export default function CanvasPage() {
             </div>
 
             <div className="mb-6">
-              <label className="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-2 block">Public Link</label>
+              <label className="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-2 block">Room Link</label>
               <div className="flex gap-2">
                 <input
                   readOnly
@@ -310,31 +343,35 @@ export default function CanvasPage() {
               </div>
             </div>
 
-            <div className="w-full h-px bg-slate-100 my-4" />
+            {roomVisibility === 'PRIVATE' && roomAdminId === currentUserId && (
+              <>
+                <div className="w-full h-px bg-slate-100 my-4" />
 
-            <div>
-              <label className="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-2 block">Invite Collaborator</label>
-              <div className="flex gap-2">
-                <input
-                  value={inviteEmail}
-                  onChange={(e) => setInviteEmail(e.target.value)}
-                  placeholder="colleague@example.com"
-                  className="flex-1 text-sm px-3 py-2 rounded-lg border border-slate-200 outline-none focus:border-blue-500 transition-colors"
-                />
-                <button
-                  onClick={handleInvite}
-                  disabled={inviteStatus === 'sending' || inviteStatus === 'sent'}
-                  className={`text-sm px-4 py-2 rounded-lg font-medium text-white transition-all
-                    ${inviteStatus === 'sent' ? 'bg-green-500' : inviteStatus === 'error' ? 'bg-red-500' : 'bg-blue-600 hover:bg-blue-700'}
-                    ${inviteStatus === 'sending' ? 'opacity-70' : ''}
-                  `}
-                >
-                  {inviteStatus === 'sending' ? '...' : inviteStatus === 'sent' ? 'Sent' : 'Invite'}
-                </button>
-              </div>
-              {inviteStatus === 'sent' && <p className="text-xs text-green-600 mt-2">Invitation sent successfully!</p>}
-              {inviteStatus === 'error' && <p className="text-xs text-red-600 mt-2">Failed to send invite.</p>}
-            </div>
+                <div>
+                  <label className="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-2 block">Invite Collaborator</label>
+                  <div className="flex gap-2">
+                    <input
+                      value={inviteEmail}
+                      onChange={(e) => setInviteEmail(e.target.value)}
+                      placeholder="colleague@example.com"
+                      className="flex-1 text-sm px-3 py-2 rounded-lg border border-slate-200 outline-none focus:border-blue-500 transition-colors"
+                    />
+                    <button
+                      onClick={handleInvite}
+                      disabled={inviteStatus === 'sending' || inviteStatus === 'sent'}
+                      className={`text-sm px-4 py-2 rounded-lg font-medium text-white transition-all
+                        ${inviteStatus === 'sent' ? 'bg-green-500' : inviteStatus === 'error' ? 'bg-red-500' : 'bg-blue-600 hover:bg-blue-700'}
+                        ${inviteStatus === 'sending' ? 'opacity-70' : ''}
+                      `}
+                    >
+                      {inviteStatus === 'sending' ? '...' : inviteStatus === 'sent' ? 'Sent' : 'Invite'}
+                    </button>
+                  </div>
+                  {inviteStatus === 'sent' && <p className="text-xs text-green-600 mt-2">Invitation sent successfully!</p>}
+                  {inviteStatus === 'error' && <p className="text-xs text-red-600 mt-2">Failed to send invite.</p>}
+                </div>
+              </>
+            )}
           </div>
         </div>
       )}
@@ -368,7 +405,8 @@ function mergeElements(existing: any[], incoming: any[]): any[] {
       map.set(el.id, el);
     }
   });
-  return Array.from(map.values()).filter((el: any) => !el.isDeleted);
+  // Keep deleted elements so Excalidraw can reconcile properly
+  return Array.from(map.values());
 }
 
 function getRandomColor(): string {

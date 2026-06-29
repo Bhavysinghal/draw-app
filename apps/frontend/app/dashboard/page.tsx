@@ -27,6 +27,8 @@ import {
   PenLine,
   Users,
   UserPlus,
+  Globe,
+  Lock,
 } from "lucide-react";
 import { BACKEND_URL } from '../../config';
 import Link from 'next/link';
@@ -34,6 +36,8 @@ import Link from 'next/link';
 interface Room {
   id: string | number;
   slug: string;
+  visibility: 'PUBLIC' | 'PRIVATE';
+  adminId: string;
   createdAt: string;
   collaborators?: { id: string; name: string; photo?: string }[];
 }
@@ -150,11 +154,12 @@ function DashboardContent() {
   const [roomSlug, setRoomSlug] = useState('');
   const [joiningSlug, setJoiningSlug] = useState<string | null>(null);
 
-  const [userData, setUserData] = useState<{ name: string; photo?: string } | null>(null);
+  const [userData, setUserData] = useState<{ id: string; name: string; photo?: string } | null>(null);
   const [loadingRooms, setLoadingRooms] = useState(true);
 
   const [showCreateDialog, setShowCreateDialog] = useState(false);
   const [creating, setCreating] = useState(false);
+  const [roomVisibility, setRoomVisibility] = useState<'PUBLIC' | 'PRIVATE'>('PRIVATE');
 
   const [showAddUserDialog, setShowAddUserDialog] = useState(false);
   const [selectedRoom, setSelectedRoom] = useState<Room | null>(null);
@@ -197,7 +202,13 @@ function DashboardContent() {
   const fetchUserProfile = async (t: string) => {
     try {
       const res = await axios.get(`${BACKEND_URL}/me`, { headers: { Authorization: `Bearer ${t}` } });
-      if (res.data.user) setUserData({ name: res.data.user.name, photo: res.data.user.photo || undefined });
+      if (res.data.user) {
+        setUserData({
+          id: res.data.user.id,
+          name: res.data.user.name,
+          photo: res.data.user.photo || undefined,
+        });
+      }
     } catch (err) { console.error(err); }
   };
 
@@ -205,9 +216,14 @@ function DashboardContent() {
     if (!token) return;
     setCreating(true);
     try {
-      await axios.post(`${BACKEND_URL}/create-room`, {}, { headers: { Authorization: `Bearer ${token}` } });
+      await axios.post(
+        `${BACKEND_URL}/create-room`,
+        { visibility: roomVisibility },
+        { headers: { Authorization: `Bearer ${token}` } }
+      );
       toast.success('Room created!', toastOptions);
       setShowCreateDialog(false);
+      setRoomVisibility('PRIVATE');
       fetchRooms(token);
     } catch { toast.error('Error creating room', toastOptions); }
     finally { setCreating(false); }
@@ -231,12 +247,19 @@ function DashboardContent() {
   };
 
   const joinRoom = async () => {
-    if (!roomSlug.trim()) return;
+    if (!roomSlug.trim() || !token) return;
     setJoiningSlug(roomSlug.trim());
     try {
-      const res = await axios.get(`${BACKEND_URL}/room/${roomSlug.trim()}`);
+      const res = await axios.get(`${BACKEND_URL}/room/${roomSlug.trim()}`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
       if (res.data.room?.slug) router.push(`/canvas/${res.data.room.slug}`);
-    } catch { toast.error('Room not found', toastOptions); }
+    } catch (error: any) {
+      const message = error.response?.status === 404
+        ? 'Room not found, or it is private and you need an invite.'
+        : 'Unable to open room';
+      toast.error(message, toastOptions);
+    }
     finally { setJoiningSlug(null); }
   };
 
@@ -461,6 +484,12 @@ function DashboardContent() {
                       }}>
                         {room.slug}
                       </span>
+                      <span
+                        title={room.visibility === 'PUBLIC' ? 'Public room' : 'Private room'}
+                        style={{ display: 'inline-flex', color: 'var(--muted-color)', flexShrink: 0 }}
+                      >
+                        {room.visibility === 'PUBLIC' ? <Globe size={13} /> : <Lock size={13} />}
+                      </span>
                       <CopyButton text={room.slug} />
                     </div>
                     <span style={{ color: 'var(--muted-color)', fontSize: 12 }}>
@@ -468,25 +497,27 @@ function DashboardContent() {
                     </span>
                   </div>
 
-                  <DropdownMenu modal={false}>
-                    <DropdownMenuTrigger asChild>
-                      <button style={{
-                        width: 28, height: 28, borderRadius: 6,
-                        border: '1px solid var(--hairline)', background: 'transparent',
-                        color: 'var(--muted-color)', display: 'flex', alignItems: 'center',
-                        justifyContent: 'center', cursor: 'pointer', flexShrink: 0,
-                      }}>
-                        <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
-                          <circle cx="8" cy="3" r="1.4"/><circle cx="8" cy="8" r="1.4"/><circle cx="8" cy="13" r="1.4"/>
-                        </svg>
-                      </button>
-                    </DropdownMenuTrigger>
-                    <DropdownMenuContent align="end">
-                      <DropdownMenuItem onClick={() => { setSelectedRoom(room); setShowAddUserDialog(true); }}>
-                        <UserPlus className="mr-2 h-4 w-4" /> Invite
-                      </DropdownMenuItem>
-                    </DropdownMenuContent>
-                  </DropdownMenu>
+                  {room.visibility === 'PRIVATE' && room.adminId === userData?.id && (
+                    <DropdownMenu modal={false}>
+                      <DropdownMenuTrigger asChild>
+                        <button style={{
+                          width: 28, height: 28, borderRadius: 6,
+                          border: '1px solid var(--hairline)', background: 'transparent',
+                          color: 'var(--muted-color)', display: 'flex', alignItems: 'center',
+                          justifyContent: 'center', cursor: 'pointer', flexShrink: 0,
+                        }}>
+                          <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
+                            <circle cx="8" cy="3" r="1.4"/><circle cx="8" cy="8" r="1.4"/><circle cx="8" cy="13" r="1.4"/>
+                          </svg>
+                        </button>
+                      </DropdownMenuTrigger>
+                      <DropdownMenuContent align="end">
+                        <DropdownMenuItem onClick={() => { setSelectedRoom(room); setShowAddUserDialog(true); }}>
+                          <UserPlus className="mr-2 h-4 w-4" /> Invite
+                        </DropdownMenuItem>
+                      </DropdownMenuContent>
+                    </DropdownMenu>
+                  )}
                 </div>
 
                 <div style={{ height: 1, background: 'var(--hairline)' }} />
@@ -561,6 +592,56 @@ function DashboardContent() {
           <p style={{ color: 'var(--muted-color)', fontSize: 14, marginBottom: 8 }}>
             A unique three-word slug will be generated automatically.
           </p>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginBottom: 12 }}>
+            <button
+              type="button"
+              onClick={() => setRoomVisibility('PRIVATE')}
+              style={{
+                padding: 14,
+                borderRadius: 8,
+                border: roomVisibility === 'PRIVATE' ? '1px solid var(--coral)' : '1px solid var(--hairline)',
+                background: roomVisibility === 'PRIVATE' ? 'var(--surface-soft)' : 'transparent',
+                color: 'var(--ink)',
+                cursor: 'pointer',
+                display: 'flex',
+                flexDirection: 'column',
+                alignItems: 'flex-start',
+                gap: 5,
+                textAlign: 'left',
+              }}
+            >
+              <span style={{ display: 'flex', alignItems: 'center', gap: 6, fontWeight: 600 }}>
+                <Lock size={14} /> Private
+              </span>
+              <span style={{ color: 'var(--muted-color)', fontSize: 12 }}>
+                Owner and invited collaborators
+              </span>
+            </button>
+            <button
+              type="button"
+              onClick={() => setRoomVisibility('PUBLIC')}
+              style={{
+                padding: 14,
+                borderRadius: 8,
+                border: roomVisibility === 'PUBLIC' ? '1px solid var(--coral)' : '1px solid var(--hairline)',
+                background: roomVisibility === 'PUBLIC' ? 'var(--surface-soft)' : 'transparent',
+                color: 'var(--ink)',
+                cursor: 'pointer',
+                display: 'flex',
+                flexDirection: 'column',
+                alignItems: 'flex-start',
+                gap: 5,
+                textAlign: 'left',
+              }}
+            >
+              <span style={{ display: 'flex', alignItems: 'center', gap: 6, fontWeight: 600 }}>
+                <Globe size={14} /> Public
+              </span>
+              <span style={{ color: 'var(--muted-color)', fontSize: 12 }}>
+                Any signed-in user with the link
+              </span>
+            </button>
+          </div>
           <button
             onClick={handleCreateRoom}
             disabled={creating}

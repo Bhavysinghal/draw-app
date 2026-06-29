@@ -7,6 +7,11 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
+enum RoomVisibility {
+  PUBLIC
+  PRIVATE
+}
+
 model User {
   id       String  @id @default(uuid())
   email    String  @unique
@@ -21,9 +26,10 @@ model User {
 }
 
 model Room {
-  id        Int      @id @default(autoincrement())
-  slug      String   @unique
-  createdAt DateTime @default(now())
+  id         Int            @id @default(autoincrement())
+  slug       String         @unique
+  visibility RoomVisibility @default(PRIVATE)
+  createdAt  DateTime       @default(now())
 
   adminId String
   admin   User   @relation("AdminRooms", fields: [adminId], references: [id])

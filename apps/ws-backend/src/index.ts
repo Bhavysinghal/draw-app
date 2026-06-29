@@ -34,6 +34,26 @@ function broadcastToRoom(roomId: number, senderWs: WebSocket, payload: object) {
   }
 }
 
+async function canAccessRoom(roomId: number, userId: string) {
+  const room = await prismaClient.room.findFirst({
+    where: {
+      id: roomId,
+      OR: [
+        { visibility: "PUBLIC" },
+        { adminId: userId },
+        { collaborators: { some: { id: userId } } },
+      ],
+    },
+    select: { id: true },
+  });
+
+  return Boolean(room);
+}
+
+function hasJoinedRoom(roomId: number, ws: WebSocket) {
+  return roomMembers.get(roomId)?.has(ws) === true;
+}
+
 wss.on("connection", (ws, request) => {
   const url = request.url;
   if (!url) return ws.close();
@@ -61,6 +81,16 @@ wss.on("connection", (ws, request) => {
     if (parsedData.type === "join_room") {
       const roomId = Number(parsedData.roomId);
       if (isNaN(roomId)) return;
+
+      if (!(await canAccessRoom(roomId, userId))) {
+        ws.send(JSON.stringify({
+          type: "error",
+          code: "ROOM_ACCESS_DENIED",
+          roomId,
+        }));
+        return;
+      }
+
       if (!roomMembers.has(roomId)) roomMembers.set(roomId, new Set());
       roomMembers.get(roomId)!.add(ws);
       return;
@@ -75,17 +105,23 @@ wss.on("connection", (ws, request) => {
     if (parsedData.type === "drawing") {
       const roomId = Number(parsedData.roomId);
       const elements: any[] = parsedData.elements ?? [];
+      if (!Number.isInteger(roomId) || !hasJoinedRoom(roomId, ws)) return;
 
       broadcastToRoom(roomId, ws, { type: "drawing", roomId, elements });
 
       setImmediate(async () => {
         for (const el of elements) {
           try {
-            await prismaClient.shape.upsert({
-              where: { id: el.id },
-              update: { data: JSON.stringify(el) },
-              create: { id: el.id, roomId, data: JSON.stringify(el) },
+            const updated = await prismaClient.shape.updateMany({
+              where: { id: el.id, roomId },
+              data: { data: JSON.stringify(el) },
             });
+
+            if (updated.count === 0) {
+              await prismaClient.shape.create({
+                data: { id: el.id, roomId, data: JSON.stringify(el) },
+              });
+            }
           } catch (e) {
             console.error("Shape save error:", e);
           }
@@ -96,6 +132,8 @@ wss.on("connection", (ws, request) => {
 
     if (parsedData.type === "cursor") {
       const roomId = Number(parsedData.roomId);
+      if (!Number.isInteger(roomId) || !hasJoinedRoom(roomId, ws)) return;
+
       broadcastToRoom(roomId, ws, {
         type: "cursor",
         roomId,
@@ -111,7 +149,11 @@ wss.on("connection", (ws, request) => {
       const roomId = Number(parsedData.roomId);
       const content = parsedData.content;
 
-      if (!roomId || typeof content !== "string") return;
+      if (
+        !Number.isInteger(roomId) ||
+        !hasJoinedRoom(roomId, ws) ||
+        typeof content !== "string"
+      ) return;
 
       try {
         const chatEntry = await prismaClient.chat.create({

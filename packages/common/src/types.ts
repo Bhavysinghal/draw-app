@@ -12,12 +12,9 @@ export const SigninSchema = z.object({
 });
 
 
-export const CreateRoomSchema = z.object({
-  name: z
-    .string()
-    .trim()
-    .min(3, "Room name too short")
-    .max(20, "Room name too long"),
-});
+export const RoomVisibilitySchema = z.enum(["PUBLIC", "PRIVATE"]);
 
+export const CreateRoomSchema = z.object({
+  visibility: RoomVisibilitySchema.default("PRIVATE"),
+});
 
